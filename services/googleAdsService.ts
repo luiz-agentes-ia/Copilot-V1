@@ -4,27 +4,21 @@ import { GoogleAdAccount } from '../types';
 
 /**
  * Inicia o fluxo de Login com Google Ads.
- * Define a flag 'auth_intent' para 'google_ads' para que o App.tsx saiba
- * onde salvar o token retornado.
+ * Define a flag 'auth_intent' para 'google_ads'.
  */
 export const signInWithGoogleAds = async () => {
   if (!supabase) return;
 
-  // Garante que o redirecionamento volte para a página/pasta atual
   const returnUrl = window.location.origin + window.location.pathname;
-
-  // Seta a intenção para que o App saiba processar o token no retorno
   localStorage.setItem('auth_intent', 'google_ads');
 
   const { data, error } = await supabase.auth.signInWithOAuth({
     provider: 'google',
     options: {
-      // O escopo oficial para ler/gerenciar Google Ads
       scopes: 'https://www.googleapis.com/auth/adwords',
       redirectTo: returnUrl,
-      // access_type offline é crucial para receber o refresh_token (acesso contínuo)
       queryParams: {
-        access_type: 'offline',
+        access_type: 'offline', // Importante para receber refresh_token
         prompt: 'consent',
       },
     },
@@ -35,11 +29,32 @@ export const signInWithGoogleAds = async () => {
 };
 
 /**
- * Busca a lista de contas de anúncio acessíveis pelo usuário logado.
+ * Busca a lista de contas acessíveis.
+ * Tenta via Edge Function para evitar CORS, ou fallback local se necessário.
  */
 export const getAccessibleCustomers = async (accessToken: string, developerToken: string): Promise<GoogleAdAccount[]> => {
+  // Chamada via Edge Function (Segura e sem CORS)
+  try {
+    const { data, error } = await supabase.functions.invoke('google-ads-proxy', {
+      body: {
+        action: 'list_customers',
+        access_token: accessToken,
+        developer_token: developerToken
+      }
+    });
+
+    if (error) throw error;
+    
+    // Se a função retornar os dados formatados
+    if (data && data.customers) {
+       return data.customers;
+    }
+  } catch (err) {
+    console.warn("Edge Function falhou ou não existe, tentando método legacy (pode falhar por CORS)...");
+  }
+
+  // Fallback (Método Legacy - sujeito a CORS)
   const url = 'https://googleads.googleapis.com/v16/customers:listAccessibleCustomers';
-  
   try {
     const response = await fetch(url, {
       method: 'GET',
@@ -50,17 +65,9 @@ export const getAccessibleCustomers = async (accessToken: string, developerToken
       }
     });
 
-    if (!response.ok) {
-       console.warn(`Google Ads API Warning: ${response.statusText}. CORS pode estar bloqueando a requisição direta.`);
-       throw new Error(`Google Ads API Error: ${response.statusText}`);
-    }
-
+    if (!response.ok) throw new Error(`Google Ads API Error: ${response.statusText}`);
     const data = await response.json();
     
-    if (data.error) {
-      throw new Error(data.error.message);
-    }
-
     return (data.resourceNames || []).map((resourceName: string) => ({
       id: resourceName.replace('customers/', ''),
       name: resourceName,
@@ -76,49 +83,32 @@ export const getAccessibleCustomers = async (accessToken: string, developerToken
 };
 
 /**
- * Busca campanhas e métricas de uma conta específica do Google Ads usando GAQL.
+ * Busca campanhas. 
+ * SOLUÇÃO CORS: Invoca a Edge Function que atua como Proxy seguro.
  */
 export const getGoogleCampaigns = async (customerId: string, accessToken: string, developerToken: string, dateRange?: { start: string, end: string }) => {
-  const cleanCustomerId = customerId.replace(/-/g, '');
-  const url = `https://googleads.googleapis.com/v16/customers/${cleanCustomerId}/googleAds:search`;
-
-  let query = `
-    SELECT 
-      campaign.id, 
-      campaign.name, 
-      campaign.status, 
-      campaign.advertising_channel_type,
-      metrics.clicks, 
-      metrics.impressions, 
-      metrics.cost_micros, 
-      metrics.conversions 
-    FROM campaign 
-    WHERE campaign.status != 'REMOVED'
-  `;
-
-  if (dateRange) {
-      query += ` AND segments.date BETWEEN '${dateRange.start}' AND '${dateRange.end}'`;
-  }
-
   try {
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${accessToken}`,
-        'developer-token': developerToken,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ query })
+    // 1. Tenta invocar a Edge Function 'google-ads-proxy'
+    const { data, error } = await supabase.functions.invoke('google-ads-proxy', {
+      body: {
+        action: 'get_campaigns', // Ação específica para buscar campanhas
+        customer_id: customerId,
+        access_token: accessToken,
+        developer_token: developerToken,
+        date_range: dateRange
+      }
     });
 
-    if (!response.ok) {
-       return [];
-    }
+    if (error) throw error;
 
-    const data = await response.json();
+    // A função deve retornar { results: [...] }
     return data.results || [];
+
   } catch (error) {
-    console.error("Erro Google Ads Campaigns:", error);
+    console.error("Erro ao buscar campanhas via Proxy:", error);
+    
+    // Se falhar (ex: função não deployada), retorna array vazio para não quebrar o app
+    // Não tentamos fetch direto aqui pois sabemos que dará erro de CORS na query GAQL
     return [];
   }
 };

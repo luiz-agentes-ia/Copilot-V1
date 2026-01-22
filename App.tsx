@@ -63,7 +63,10 @@ interface AppContextType {
   // CRM & Agenda Data
   leads: Lead[];
   addLead: (lead: Lead) => Promise<void>;
+  updateLead: (lead: Lead) => Promise<void>;
   appointments: Appointment[];
+  addAppointment: (apt: Appointment) => Promise<void>;
+  updateAppointment: (apt: Appointment) => Promise<void>;
 }
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
@@ -149,63 +152,88 @@ const App: React.FC = () => {
     }
   }, []);
 
-  // --- DATA FETCHING FUNCTIONS (Memoized) ---
+  // --- DATA FETCHING FUNCTIONS ---
   const fetchFinancials = useCallback(async () => {
-    if (!supabase) return;
+    if (!supabase || !user) return;
     try {
-      const { data } = await supabase.from('transactions').select('*').order('date', { ascending: false });
+      const { data, error } = await supabase
+        .from('transactions')
+        .select('*')
+        .order('date', { ascending: false });
+        
+      if (error) {
+        console.error("Erro ao buscar transações:", error);
+        return;
+      }
+      
       if (data) {
-        const mapped = data.map((d: any) => ({ ...d, unitValue: Number(d.unit_value), total: Number(d.total) }));
+        const mapped = data.map((d: any) => ({ 
+            ...d, 
+            unitValue: Number(d.unit_value), 
+            total: Number(d.total) 
+        }));
         setFinancialEntries(mapped);
       }
     } catch (err) { console.error(err); }
-  }, []);
+  }, [user]);
 
   const fetchLeads = useCallback(async () => {
-    if (!supabase) return;
+    if (!supabase || !user) return;
     try {
-      const { data } = await supabase.from('leads').select('*').order('created_at', { ascending: false });
+      const { data, error } = await supabase
+        .from('leads')
+        .select('*')
+        .order('created_at', { ascending: false });
+
+      if (error) {
+         console.error("Erro ao buscar leads:", error);
+         return;
+      }
+
       if (data) {
-        const mapped = data.map((d: any) => ({ ...d, potentialValue: Number(d.potential_value), lastInteraction: '1d' }));
+        const mapped = data.map((d: any) => ({ 
+            ...d, 
+            potentialValue: Number(d.potential_value), 
+            lastMessage: d.last_message,
+            lastInteraction: '1d' 
+        }));
         setLeads(mapped);
       }
     } catch (err) { console.error(err); }
-  }, []);
+  }, [user]);
 
   const fetchAppointments = useCallback(async () => {
-    if (!supabase) return;
+    if (!supabase || !user) return;
     try {
-      const { data } = await supabase.from('appointments').select('*').order('date', { ascending: true });
+      const { data, error } = await supabase
+        .from('appointments')
+        .select('*')
+        .order('date', { ascending: true });
+
+      if (error) {
+          console.error("Erro ao buscar agendamentos:", error);
+          return;
+      }
+
       if (data) {
         const mapped = data.map((d: any) => ({ ...d, patientName: d.patient_name }));
         setAppointments(mapped);
       }
     } catch (err) { console.error(err); }
-  }, []);
+  }, [user]);
 
-  // --- SUPABASE REALTIME SUBSCRIPTIONS (THE GLUE) ---
+  // --- REALTIME SUBSCRIPTIONS ---
   useEffect(() => {
     if (!isAuthenticated || !user || !supabase) return;
 
-    // Carregamento inicial
     fetchFinancials();
     fetchLeads();
     fetchAppointments();
 
-    // Inscreve para mudanças no banco de dados em Tempo Real
     const channel = supabase.channel('main-db-changes')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'transactions' }, () => {
-          console.log('⚡ Atualização Financeira em Tempo Real');
-          fetchFinancials();
-      })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'leads' }, () => {
-          console.log('⚡ Atualização de Leads em Tempo Real');
-          fetchLeads();
-      })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'appointments' }, () => {
-          console.log('⚡ Atualização de Agenda em Tempo Real');
-          fetchAppointments();
-      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'transactions' }, () => fetchFinancials())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'leads' }, () => fetchLeads())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'appointments' }, () => fetchAppointments())
       .subscribe();
 
     return () => {
@@ -229,21 +257,22 @@ const App: React.FC = () => {
              if (authIntent === 'google_ads') {
                 setGoogleAdsToken(session.provider_token);
                 localStorage.setItem('google_ads_token', session.provider_token);
-                localStorage.removeItem('auth_intent');
              } 
              else if (authIntent === 'google_calendar') {
                 setGoogleCalendarToken(session.provider_token);
                 localStorage.setItem('google_calendar_token', session.provider_token);
-                localStorage.removeItem('auth_intent');
              }
              else if (authIntent === 'google_sheets') {
                 setGoogleSheetsToken(session.provider_token);
                 localStorage.setItem('google_sheets_token', session.provider_token);
-                localStorage.removeItem('auth_intent');
              }
+             localStorage.removeItem('auth_intent');
           }
        } else {
           setUser(null);
+          setFinancialEntries([]);
+          setLeads([]);
+          setAppointments([]);
        }
        setAuthLoading(false);
     };
@@ -259,7 +288,7 @@ const App: React.FC = () => {
       if (data) {
         setUser({ id: data.id, name: data.name || 'Admin', email: data.email || '', clinic: data.clinic_name || 'Clínica', plan: 'pro', ticketValue: Number(data.ticket_value) || 450 });
       } else {
-        setUser({ id: userId, name: 'Admin', email: 'admin@cozmos.com', clinic: 'Minha Clínica', plan: 'pro', ticketValue: 450 });
+        setUser({ id: userId, name: 'Doutor(a)', email: 'admin@cozmos.com', clinic: 'Minha Clínica', plan: 'pro', ticketValue: 450 });
       }
     } catch (err) { console.error(err); }
   };
@@ -281,7 +310,7 @@ const App: React.FC = () => {
 
   const logout = async () => { 
     await supabase!.auth.signOut(); 
-    localStorage.clear(); // Limpa tudo para garantir
+    localStorage.clear(); 
     setMetaToken(null);
     setGoogleAdsToken(null);
     setGoogleCalendarToken(null);
@@ -289,31 +318,110 @@ const App: React.FC = () => {
     setIsAuthenticated(false); 
   };
 
-  // --- CRUD OPERATIONS (OPTIMISTIC UI or DIRECT DB) ---
-  // O Realtime já atualiza a UI, então aqui focamos apenas em enviar para o Supabase
+  // --- CRUD OPERATIONS COM ATUALIZAÇÃO OTIMISTA ---
+  
+  // Financeiro
   const addFinancialEntry = async (entry: FinancialEntry) => {
-    await supabase!.from('transactions').insert([{
-       user_id: user?.id, type: entry.type, category: entry.category, name: entry.name,
+    if (!user) return;
+    // Otimista: Adiciona na lista local imediatamente
+    const tempId = crypto.randomUUID();
+    const newEntry = { ...entry, id: tempId };
+    setFinancialEntries(prev => [newEntry, ...prev]);
+
+    const { error } = await supabase!.from('transactions').insert([{
+       user_id: user.id, type: entry.type, category: entry.category, name: entry.name,
        unit_value: entry.unitValue, total: entry.total, status: entry.status, date: entry.date
     }]);
+
+    if (error) {
+        console.error("Erro ao adicionar transação:", error);
+        // Rollback
+        setFinancialEntries(prev => prev.filter(e => e.id !== tempId));
+        alert("Erro ao salvar. Tente novamente.");
+    }
   };
 
   const updateFinancialEntry = async (entry: FinancialEntry) => {
-    await supabase!.from('transactions').update({
+    // Otimista
+    setFinancialEntries(prev => prev.map(e => e.id === entry.id ? entry : e));
+
+    const { error } = await supabase!.from('transactions').update({
        type: entry.type, category: entry.category, name: entry.name,
        unit_value: entry.unitValue, total: entry.total, status: entry.status, date: entry.date
     }).eq('id', entry.id);
+
+    if (error) {
+       console.error("Erro ao atualizar:", error);
+       fetchFinancials(); // Reverte para o estado do servidor
+       alert("Erro ao atualizar transação.");
+    }
   };
 
   const deleteFinancialEntry = async (id: string) => {
-    await supabase!.from('transactions').delete().eq('id', id);
+    // Otimista: Remove da tela imediatamente
+    const backup = [...financialEntries];
+    setFinancialEntries(prev => prev.filter(e => e.id !== id));
+
+    const { error } = await supabase!.from('transactions').delete().eq('id', id);
+
+    if (error) {
+       console.error("Erro ao deletar:", error);
+       setFinancialEntries(backup); // Restaura se der erro
+       alert("Erro ao excluir. O item não foi removido.");
+    }
   };
 
+  // Leads
   const addLead = async (lead: Lead) => {
-    await supabase!.from('leads').insert([{
-        user_id: user?.id, name: lead.name, phone: lead.phone, status: lead.status,
+    if (!user) return;
+    const tempId = crypto.randomUUID();
+    const newLead = { ...lead, id: tempId };
+    setLeads(prev => [newLead, ...prev]);
+
+    const { error } = await supabase!.from('leads').insert([{
+        user_id: user.id, name: lead.name, phone: lead.phone, status: lead.status,
         temperature: lead.temperature, last_message: lead.lastMessage, potential_value: lead.potentialValue
     }]);
+
+    if (error) {
+        setLeads(prev => prev.filter(l => l.id !== tempId));
+        console.error(error);
+    }
+  };
+
+  const updateLead = async (lead: Lead) => {
+    setLeads(prev => prev.map(l => l.id === lead.id ? lead : l));
+    const { error } = await supabase!.from('leads').update({
+        name: lead.name, phone: lead.phone, status: lead.status,
+        temperature: lead.temperature, last_message: lead.lastMessage, potential_value: lead.potentialValue
+    }).eq('id', lead.id);
+    
+    if (error) fetchLeads();
+  };
+
+  // Agenda
+  const addAppointment = async (apt: Appointment) => {
+    if (!user) return;
+    const tempId = crypto.randomUUID();
+    const newApt = { ...apt, id: tempId };
+    setAppointments(prev => [...prev, newApt]);
+
+    const { error } = await supabase!.from('appointments').insert([{
+        user_id: user.id, date: apt.date, time: apt.time,
+        patient_name: apt.patientName, status: apt.status, type: apt.type
+    }]);
+
+    if (error) setAppointments(prev => prev.filter(a => a.id !== tempId));
+  };
+
+  const updateAppointment = async (apt: Appointment) => {
+    setAppointments(prev => prev.map(a => a.id === apt.id ? apt : a));
+    const { error } = await supabase!.from('appointments').update({
+        date: apt.date, time: apt.time,
+        patient_name: apt.patientName, status: apt.status, type: apt.type
+    }).eq('id', apt.id);
+    
+    if (error) fetchAppointments();
   };
 
   const updateUser = async (updates: Partial<User>) => {
@@ -327,7 +435,7 @@ const App: React.FC = () => {
     }
   };
 
-  // --- CONSOLIDATED METRICS LOGIC (THE BRAIN) ---
+  // --- CONSOLIDATED METRICS LOGIC ---
   const consolidatedMetrics = useMemo((): ConsolidatedMetrics => {
     // 1. Filtragem por data
     const filteredEntries = financialEntries.filter(e => e.date >= dateFilter.start && e.date <= dateFilter.end && e.status === 'efetuada');
@@ -339,9 +447,7 @@ const App: React.FC = () => {
     const gastosOperacionais = filteredEntries.filter(e => e.type === 'payable' && e.category !== 'Marketing').reduce((acc, curr) => acc + curr.total, 0);
     
     // 3. Marketing (Interligação Chave)
-    // Soma gastos manuais de Marketing lançados no Financeiro
     const investimentoMktManual = filteredEntries.filter(e => e.type === 'payable' && e.category === 'Marketing').reduce((acc, curr) => acc + curr.total, 0);
-    // Aqui poderíamos somar o API spend se tivéssemos armazenado no banco, mas por enquanto usamos o manual como base sólida
     const finalMarketingSpend = investimentoMktManual; 
 
     const gastosTotais = gastosOperacionais + finalMarketingSpend;
@@ -412,7 +518,8 @@ const App: React.FC = () => {
       selectedMetaCampaigns, setSelectedMetaCampaigns, toggleIntegration, 
       dateFilter, setDateFilter, metrics: consolidatedMetrics,
       financialEntries, addFinancialEntry, updateFinancialEntry, deleteFinancialEntry,
-      leads, addLead, appointments
+      leads, addLead, updateLead, 
+      appointments, addAppointment, updateAppointment
     }}>
       <div className="flex flex-col md:flex-row h-screen overflow-hidden bg-slate-50">
         <div className="md:hidden flex items-center justify-between p-4 bg-navy text-white z-[60] shadow-md">
@@ -430,7 +537,7 @@ const App: React.FC = () => {
   );
 };
 
-// ... (AuthScreen Component Mantido Igual) ...
+// ... (AuthScreen e resto do arquivo mantidos)
 const AuthScreen = ({ onLogin, onSignUp }: { onLogin: any, onSignUp: any }) => {
   const [isLogin, setIsLogin] = useState(true);
   const [email, setEmail] = useState('');

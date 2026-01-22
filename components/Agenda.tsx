@@ -1,17 +1,26 @@
 
 import React, { useState, useEffect, useMemo } from 'react';
-import { Calendar, Clock, UserCheck, UserX, ChevronLeft, ChevronRight, Bot, Target, LayoutGrid, List, RefreshCw } from 'lucide-react';
+import { Calendar, Clock, UserCheck, UserX, ChevronLeft, ChevronRight, Bot, Target, LayoutGrid, List, RefreshCw, X, Save, Edit2 } from 'lucide-react';
 import { useApp } from '../App';
 import { getUpcomingEvents, GoogleCalendarEvent } from '../services/googleCalendarService';
+import { Appointment } from '../types';
 
 type ViewMode = 'month' | 'week';
 
 const Agenda: React.FC = () => {
-  const { appointments, googleCalendarToken } = useApp();
+  const { appointments, googleCalendarToken, addAppointment, updateAppointment } = useApp();
   const [viewDate, setViewDate] = useState(new Date());
   const [viewMode, setViewMode] = useState<ViewMode>('month');
   const [googleEvents, setGoogleEvents] = useState<GoogleCalendarEvent[]>([]);
   const [loadingCalendar, setLoadingCalendar] = useState(false);
+  
+  // Modal State
+  const [showModal, setShowModal] = useState(false);
+  const [editingApt, setEditingApt] = useState<Appointment | null>(null);
+  const [formDate, setFormDate] = useState(new Date().toISOString().split('T')[0]);
+  const [formTime, setFormTime] = useState('09:00');
+  const [formName, setFormName] = useState('');
+  const [formType, setFormType] = useState('Consulta');
 
   const today = new Date();
 
@@ -107,8 +116,58 @@ const Agenda: React.FC = () => {
     });
   }, [viewDate]);
 
+  // Handle Form
+  const handleOpenModal = () => {
+    setFormDate(todayStr);
+    setFormTime('09:00');
+    setFormName('');
+    setFormType('Consulta');
+    setEditingApt(null);
+    setShowModal(true);
+  };
+
+  const handleEditClick = (apt: Appointment) => {
+    setEditingApt(apt);
+    setFormDate(apt.date);
+    setFormTime(apt.time);
+    setFormName(apt.patientName);
+    setFormType(apt.type || 'Consulta');
+    setShowModal(true);
+  };
+
+  const handleEditStatus = async (apt: any, newStatus: string) => {
+     if (apt.isGoogle) return;
+     await updateAppointment({ ...apt, status: newStatus });
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
+     e.preventDefault();
+     if (!formName) return;
+
+     if (editingApt) {
+        await updateAppointment({
+           ...editingApt,
+           date: formDate,
+           time: formTime,
+           patientName: formName,
+           type: formType as any
+        });
+     } else {
+        const newApt: any = {
+           id: crypto.randomUUID(),
+           date: formDate,
+           time: formTime,
+           patientName: formName,
+           type: formType,
+           status: 'Confirmado'
+        };
+        await addAppointment(newApt);
+     }
+     setShowModal(false);
+  };
+
   return (
-    <div className="space-y-6 animate-in fade-in duration-500 pb-12">
+    <div className="space-y-6 animate-in fade-in duration-500 pb-12 relative">
       <header className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
         <div>
           <h2 className="text-2xl font-bold text-navy">Gestão de Agenda</h2>
@@ -321,7 +380,7 @@ const Agenda: React.FC = () => {
             <h3 className="text-xs font-bold text-navy mb-6 uppercase tracking-widest flex items-center gap-2">
               <Clock size={16} className="text-blue-500" /> Detalhes do Dia
             </h3>
-            <div className="space-y-4">
+            <div className="space-y-4 max-h-[400px] overflow-y-auto custom-scrollbar">
               {todaySlots.length === 0 ? (
                   <p className="text-xs text-slate-400 italic text-center py-4">Nenhum agendamento para este dia.</p>
               ) : todaySlots.map((slot, i) => (
@@ -330,18 +389,43 @@ const Agenda: React.FC = () => {
                     <span className="text-[10px] font-black text-navy">{slot.time.slice(0, 5)}</span>
                   </div>
                   <div className="flex-1 min-w-0">
-                    <p className={`text-xs font-bold truncate text-navy`}>
-                      {slot.patientName}
-                    </p>
-                    <p className="text-[9px] text-slate-500 font-bold uppercase tracking-tight mt-0.5">{slot.type}</p>
+                    <div className="flex justify-between items-start">
+                        <p className={`text-xs font-bold truncate text-navy`}>
+                          {slot.patientName}
+                        </p>
+                        {!slot.isGoogle && (
+                            <button onClick={() => handleEditClick(slot)} className="text-slate-300 hover:text-navy transition-colors">
+                                <Edit2 size={12} />
+                            </button>
+                        )}
+                    </div>
+                    {/* Select de Status Simples para Agenda */}
+                    {!(slot as any).isGoogle ? (
+                      <select 
+                        value={slot.status} 
+                        onChange={(e) => handleEditStatus(slot, e.target.value)}
+                        className="mt-1 text-[9px] bg-slate-50 border border-slate-200 rounded px-1 py-0.5 text-slate-500 uppercase font-bold focus:outline-none cursor-pointer"
+                      >
+                         <option value="Confirmado">Confirmado</option>
+                         <option value="Realizado">Realizado</option>
+                         <option value="Cancelado">Cancelado</option>
+                      </select>
+                    ) : (
+                      <p className="text-[9px] text-amber-500 font-bold uppercase tracking-tight mt-0.5">Google Calendar</p>
+                    )}
                   </div>
                   {slot.status === 'Confirmado' && (
                     <div className={`w-2.5 h-2.5 rounded-full shadow-lg shrink-0 ${ (slot as any).isGoogle ? 'bg-amber-500' : 'bg-emerald-500'}`}></div>
                   )}
+                  {slot.status === 'Realizado' && <div className="w-2.5 h-2.5 rounded-full bg-blue-600 shrink-0"></div>}
+                  {slot.status === 'Cancelado' && <div className="w-2.5 h-2.5 rounded-full bg-slate-300 shrink-0"></div>}
                 </div>
               ))}
             </div>
-            <button className="w-full mt-8 bg-slate-900 text-white py-4 rounded-xl font-black text-[10px] uppercase tracking-widest hover:bg-slate-800 transition-all shadow-lg">
+            <button 
+                onClick={handleOpenModal}
+                className="w-full mt-8 bg-slate-900 text-white py-4 rounded-xl font-black text-[10px] uppercase tracking-widest hover:bg-slate-800 transition-all shadow-lg"
+            >
               Adicionar Novo Agendamento
             </button>
           </div>
@@ -372,6 +456,53 @@ const Agenda: React.FC = () => {
           </div>
         </div>
       </div>
+
+      {/* Modal de Agendamento */}
+      {showModal && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-navy/80 backdrop-blur-md animate-in fade-in duration-300">
+           <div className="bg-white rounded-[40px] w-full max-w-lg shadow-2xl overflow-hidden animate-in zoom-in-95 duration-300">
+              <form onSubmit={handleSubmit}>
+                 <div className="p-8 border-b border-slate-100 flex justify-between items-center bg-slate-50/50">
+                    <div>
+                        <h3 className="text-xl font-bold text-navy">{editingApt ? 'Editar Agendamento' : 'Novo Agendamento'}</h3>
+                        <p className="text-[10px] text-slate-400 font-black uppercase tracking-widest mt-1">Insira os dados do paciente</p>
+                    </div>
+                    <button type="button" onClick={() => setShowModal(false)} className="p-2 hover:bg-slate-200 rounded-full transition-all text-slate-400"><X size={24} /></button>
+                 </div>
+                 <div className="p-8 space-y-4">
+                    <div className="space-y-2">
+                        <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Nome do Paciente</label>
+                        <input required type="text" value={formName} onChange={e => setFormName(e.target.value)} className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold text-navy focus:outline-none focus:ring-2 focus:ring-navy" placeholder="Ex: Maria Silva" />
+                    </div>
+                    <div className="grid grid-cols-2 gap-4">
+                        <div className="space-y-2">
+                            <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Data</label>
+                            <input required type="date" value={formDate} onChange={e => setFormDate(e.target.value)} className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold text-navy focus:outline-none focus:ring-2 focus:ring-navy" />
+                        </div>
+                        <div className="space-y-2">
+                            <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Hora</label>
+                            <input required type="time" value={formTime} onChange={e => setFormTime(e.target.value)} className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold text-navy focus:outline-none focus:ring-2 focus:ring-navy" />
+                        </div>
+                    </div>
+                    <div className="space-y-2">
+                        <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Tipo</label>
+                        <select value={formType} onChange={e => setFormType(e.target.value)} className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold text-navy appearance-none">
+                            <option>Consulta</option>
+                            <option>Retorno</option>
+                            <option>Procedimento</option>
+                        </select>
+                    </div>
+                 </div>
+                 <div className="p-8 bg-slate-50 border-t border-slate-100 flex justify-end gap-3">
+                    <button type="button" onClick={() => setShowModal(false)} className="px-6 py-3 text-[10px] font-black uppercase text-slate-400 hover:bg-slate-200 rounded-2xl transition-all">Cancelar</button>
+                    <button type="submit" className="bg-navy text-white px-8 py-3 rounded-2xl font-black text-[10px] uppercase tracking-widest shadow-xl shadow-navy/30 hover:bg-slate-800 transition-all flex items-center gap-2">
+                        <Save size={16} /> Salvar
+                    </button>
+                 </div>
+              </form>
+           </div>
+        </div>
+      )}
     </div>
   );
 };

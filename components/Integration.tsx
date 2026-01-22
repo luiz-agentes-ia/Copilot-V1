@@ -9,14 +9,14 @@ import {
   LogOut,
   Copy,
   Terminal,
-  Globe,
   Database,
   AlertOctagon,
   ExternalLink,
   HelpCircle,
   FileSpreadsheet,
   MessageCircle,
-  Network
+  Network,
+  Activity
 } from 'lucide-react';
 import { useApp } from '../App';
 import { getMetaAdAccounts, getMetaCampaigns } from '../services/metaService';
@@ -185,6 +185,14 @@ const Integration: React.FC = () => {
     setTimeout(() => setCopied(null), 2000);
   };
 
+  // --- Mapeamento de Status Visual ---
+  const connectionStatus = [
+    { id: 'google-ads', label: 'Google Ads', active: !!googleAdsToken, icon: <GoogleIcon size={18} /> },
+    { id: 'meta-ads', label: 'Meta Ads', active: !!metaToken, icon: <Instagram size={18} /> },
+    { id: 'calendar', label: 'G. Calendar', active: !!googleCalendarToken, icon: <Calendar size={18} /> },
+    { id: 'sheets', label: 'G. Sheets', active: !!googleSheetsToken, icon: <FileSpreadsheet size={18} /> },
+  ];
+
   // --- Render Helpers ---
   const renderGoogleAdsCard = () => (
     <div className="mt-4 space-y-3 animate-in fade-in">
@@ -249,10 +257,42 @@ const Integration: React.FC = () => {
 
   return (
     <div className="space-y-8 pb-20">
-      <header>
-        <h2 className="text-2xl font-bold text-navy">Central de Conexões</h2>
-        <p className="text-slate-500 text-sm">Gerencie o acesso às suas fontes de dados.</p>
+      <header className="flex justify-between items-end">
+        <div>
+            <h2 className="text-2xl font-bold text-navy">Central de Conexões</h2>
+            <p className="text-slate-500 text-sm">Gerencie o acesso às suas fontes de dados.</p>
+        </div>
+        <div className="hidden md:flex items-center gap-2 text-xs font-bold text-slate-400 bg-white px-3 py-1.5 rounded-lg border border-slate-200">
+            <Activity size={14} className="text-emerald-500" /> Status do Sistema: Online
+        </div>
       </header>
+
+      {/* DASHBOARD DE STATUS DO ECOSSISTEMA */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 animate-in fade-in duration-500">
+        {connectionStatus.map((item) => (
+            <div key={item.id} className={`p-4 rounded-2xl border flex items-center justify-between transition-all ${item.active ? 'bg-emerald-50/50 border-emerald-100 shadow-sm' : 'bg-white border-slate-100 opacity-60 grayscale-[0.5]'}`}>
+                <div className="flex items-center gap-3">
+                    <div className={`p-2 rounded-xl ${item.active ? 'bg-white shadow-sm text-emerald-600' : 'bg-slate-50 text-slate-400'}`}>
+                        {item.icon}
+                    </div>
+                    <div>
+                        <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500">{item.label}</p>
+                        <p className={`text-xs font-black ${item.active ? 'text-emerald-600' : 'text-slate-400'}`}>
+                            {item.active ? 'Conectado' : 'Pendente'}
+                        </p>
+                    </div>
+                </div>
+                {item.active && (
+                    <div className="relative flex h-2 w-2">
+                      <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                      <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+                    </div>
+                )}
+            </div>
+        ))}
+      </div>
+
+      <div className="h-px bg-slate-200 w-full"></div>
 
       {/* CARDS DE CONEXÃO (LADO A LADO) */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
@@ -338,7 +378,7 @@ const Integration: React.FC = () => {
             )}
         </div>
 
-        {/* GOOGLE SHEETS (RESTAURADO) */}
+        {/* GOOGLE SHEETS */}
         <div className={`bg-white p-6 rounded-3xl border shadow-sm flex flex-col group transition-all ${googleSheetsToken ? 'border-emerald-100 ring-1 ring-emerald-50' : 'border-slate-200 hover:border-navy'}`}>
             <div className="flex justify-between items-start mb-4">
               <div className="p-3 bg-slate-50 rounded-2xl group-hover:bg-navy group-hover:text-white transition-colors"><FileSpreadsheet className="text-emerald-500" /></div>

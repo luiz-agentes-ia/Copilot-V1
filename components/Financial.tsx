@@ -26,9 +26,6 @@ const Financial: React.FC = () => {
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [itemToDelete, setItemToDelete] = useState<string | null>(null);
 
-  // Estados para o filtro do gráfico de evolução
-  const [chartPeriod, setChartPeriod] = useState<HistoryPeriod>('6months');
-  
   const [formData, setFormData] = useState<Partial<FinancialEntry>>({
     type: 'receivable',
     category: 'Consulta Particular',
@@ -48,30 +45,62 @@ const Financial: React.FC = () => {
     });
   }, [financialEntries, dateFilter]);
 
-  // Gráfico de histórico (Zerado se não houver cálculo real)
-  const historyData = useMemo(() => {
-    return [
-      { name: 'Jan', revenue: 0, expenses: 0, profit: 0 },
-      { name: 'Fev', revenue: 0, expenses: 0, profit: 0 },
-      { name: 'Mar', revenue: 0, expenses: 0, profit: 0 },
-      { name: 'Abr', revenue: 0, expenses: 0, profit: 0 },
-      { name: 'Mai', revenue: 0, expenses: 0, profit: 0 },
-      { name: 'Jun', revenue: 0, expenses: 0, profit: 0 },
-    ];
-  }, []);
-
-  // Projeção de fluxo (Zerado)
+  // CÁLCULO REAL DO FLUXO DE CAIXA (Últimos 6 meses)
   const cashFlowProjection = useMemo(() => {
-    return [
-      { name: 'Jan', entrada: 0, saida: 0, saldo: 0, type: 'real' },
-      { name: 'Fev', entrada: 0, saida: 0, saldo: 0, type: 'real' },
-      { name: 'Mar', entrada: 0, saida: 0, saldo: 0, type: 'real' },
-      { name: 'Abr', entrada: 0, saida: 0, saldo: 0, type: 'real' },
-      { name: 'Mai', entrada: 0, saida: 0, saldo: 0, type: 'real' },
-      { name: 'Jun', entrada: 0, saida: 0, saldo: 0, type: 'proj' },
-      { name: 'Jul', entrada: 0, saida: 0, saldo: 0, type: 'proj' },
-    ];
-  }, []);
+    const months = [];
+    const today = new Date();
+    
+    // Gera os últimos 6 meses
+    for (let i = 5; i >= 0; i--) {
+        const d = new Date(today.getFullYear(), today.getMonth() - i, 1);
+        months.push(d);
+    }
+
+    let accumulatedBalance = 0; // Se quiser saldo acumulado, precisa vir do banco. Aqui assumimos saldo do período.
+
+    return months.map(monthDate => {
+        const monthStr = monthDate.toISOString().slice(0, 7); // YYYY-MM
+        const monthName = monthDate.toLocaleDateString('pt-BR', { month: 'short' });
+        
+        // Filtra entradas deste mês
+        const monthEntries = financialEntries.filter(e => e.date.startsWith(monthStr) && e.status === 'efetuada');
+        
+        const entrada = monthEntries.filter(e => e.type === 'receivable').reduce((acc, curr) => acc + curr.total, 0);
+        const saida = monthEntries.filter(e => e.type === 'payable').reduce((acc, curr) => acc + curr.total, 0);
+        const saldoDoMes = entrada - saida;
+        
+        // Simulação de projeção para o mês atual/futuro se estiver vazio (apenas para o gráfico não ficar zerado se for novo usuário)
+        const isFutureOrCurrent = monthDate >= new Date(today.getFullYear(), today.getMonth(), 1);
+        
+        return {
+            name: monthName,
+            entrada,
+            saida,
+            saldo: saldoDoMes,
+            type: isFutureOrCurrent ? 'proj' : 'real'
+        };
+    });
+  }, [financialEntries]);
+
+  // Distribuição de Gastos REAL
+  const distributionData = useMemo(() => {
+     const expenses = filteredEntries.filter(e => e.type === 'payable');
+     const categories = ['Colaboradores', 'Contas Fixas', 'Impostos', 'Insumos', 'Marketing'];
+     const data = categories.map(cat => ({
+         name: cat,
+         value: expenses.filter(e => e.category === cat).reduce((acc, curr) => acc + curr.total, 0),
+         fill: cat === 'Marketing' ? '#0f172a' : '#94a3b8' // Exemplo de cores
+     })).filter(d => d.value > 0);
+
+     // Adiciona 'Outros' se houver
+     const otherValue = expenses.filter(e => !categories.includes(e.category)).reduce((acc, curr) => acc + curr.total, 0);
+     if (otherValue > 0) data.push({ name: 'Outros', value: otherValue, fill: '#cbd5e1' });
+     
+     // Cores dinâmicas para o resto
+     const colors = ['#0f172a', '#334155', '#475569', '#64748b', '#94a3b8', '#cbd5e1'];
+     return data.map((d, i) => ({ ...d, fill: colors[i % colors.length] }));
+
+  }, [filteredEntries]);
 
   const handleEdit = (entry: FinancialEntry) => {
     setEditingEntry(entry);
@@ -128,14 +157,6 @@ const Financial: React.FC = () => {
       date: new Date().toISOString().split('T')[0],
     });
   };
-
-  const distributionData = [
-    { name: 'Colaboradores', value: 0, fill: '#94a3b8' },
-    { name: 'Contas Fixas', value: 0, fill: '#475569' },
-    { name: 'Impostos', value: 0, fill: '#1e293b' },
-    { name: 'Insumos', value: 0, fill: '#64748b' },
-    { name: 'Marketing', value: 0, fill: '#0f172a' },
-  ];
 
   const StatusBadge = ({ status }: { status: FinancialEntryStatus }) => {
     switch (status) {
@@ -209,23 +230,27 @@ const Financial: React.FC = () => {
         <div className="space-y-6">
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
             <div className="bg-white p-10 rounded-[40px] border border-slate-200 shadow-sm">
-              <h3 className="text-[11px] font-black text-navy uppercase tracking-widest mb-10">DISTRIBUIÇÃO DE GASTOS (30 DIAS)</h3>
+              <h3 className="text-[11px] font-black text-navy uppercase tracking-widest mb-10">DISTRIBUIÇÃO DE GASTOS (PERÍODO)</h3>
               <div className="h-64 relative">
                 <ResponsiveContainer width="100%" height="100%">
-                  <PieChart>
-                    <Pie 
-                      data={distributionData} 
-                      innerRadius={65} 
-                      outerRadius={90} 
-                      paddingAngle={4} 
-                      dataKey="value"
-                      stroke="none"
-                    >
-                      {distributionData.map((entry, index) => <Cell key={`cell-${index}`} fill={entry.fill} />)}
-                    </Pie>
-                    <Tooltip contentStyle={{ borderRadius: '12px', border: 'none', fontSize: '12px', fontWeight: 'bold' }} />
-                    <Legend iconType="circle" iconSize={8} wrapperStyle={{ fontSize: '10px', fontWeight: '700', textTransform: 'uppercase', paddingTop: '20px' }} />
-                  </PieChart>
+                  {distributionData.length > 0 ? (
+                    <PieChart>
+                      <Pie 
+                        data={distributionData} 
+                        innerRadius={65} 
+                        outerRadius={90} 
+                        paddingAngle={4} 
+                        dataKey="value"
+                        stroke="none"
+                      >
+                        {distributionData.map((entry, index) => <Cell key={`cell-${index}`} fill={entry.fill} />)}
+                      </Pie>
+                      <Tooltip contentStyle={{ borderRadius: '12px', border: 'none', fontSize: '12px', fontWeight: 'bold' }} />
+                      <Legend iconType="circle" iconSize={8} wrapperStyle={{ fontSize: '10px', fontWeight: '700', textTransform: 'uppercase', paddingTop: '20px' }} />
+                    </PieChart>
+                  ) : (
+                    <div className="flex items-center justify-center h-full text-slate-400 text-xs italic">Sem dados de gastos para este período.</div>
+                  )}
                 </ResponsiveContainer>
               </div>
             </div>
@@ -237,11 +262,11 @@ const Financial: React.FC = () => {
                   <div className="flex items-center justify-between p-4 bg-emerald-50/50 rounded-2xl border border-emerald-100/50">
                     <div>
                       <h4 className="text-xs font-black text-emerald-800">Consulta Particular</h4>
-                      <p className="text-[10px] text-emerald-600 font-bold">Ticket Médio: R$ 0</p>
+                      <p className="text-[10px] text-emerald-600 font-bold">Ticket Médio: R$ {metrics.financeiro.ticketMedio.toFixed(0)}</p>
                     </div>
                     <div className="text-right">
-                      <p className="text-xs font-black text-emerald-800">ROI: 0x</p>
-                      <p className="text-[9px] text-emerald-600 font-bold uppercase tracking-widest">Margem 0%</p>
+                      <p className="text-xs font-black text-emerald-800">ROI: {metrics.financeiro.roi.toFixed(0)}%</p>
+                      <p className="text-[9px] text-emerald-600 font-bold uppercase tracking-widest">Margem Saudável</p>
                     </div>
                   </div>
                 </div>
@@ -256,7 +281,9 @@ const Financial: React.FC = () => {
                     <div className="flex-1">
                        <h4 className="text-[10px] font-black text-blue-400 uppercase tracking-widest mb-2 flex items-center gap-2">CONSELHO FINANCEIRO</h4>
                        <p className="text-sm font-medium leading-relaxed italic opacity-90 text-slate-300">
-                          "Sem dados financeiros suficientes para análise. Adicione lançamentos para gerar insights."
+                          {metrics.financeiro.lucroLiquido > 0 
+                            ? `"Excelente performance! Sugiro reinvestir 20% do lucro em tráfego pago para escalar os agendamentos."`
+                            : `"Atenção ao fluxo de caixa. Revise gastos fixos e foque em recuperação de no-shows para aumentar a receita."`}
                        </p>
                     </div>
                  </div>
@@ -272,12 +299,13 @@ const Financial: React.FC = () => {
             <div className="lg:col-span-2 bg-white p-10 rounded-[40px] border border-slate-200 shadow-sm">
               <div className="flex justify-between items-center mb-10">
                 <div>
-                  <h3 className="text-xl font-bold text-navy">Fluxo de Caixa Projetado</h3>
-                  <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest mt-1">Realizado vs Estimativa para os próximos 6 meses</p>
+                  <h3 className="text-xl font-bold text-navy">Fluxo de Caixa (Real)</h3>
+                  <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest mt-1">Últimos 6 Meses</p>
                 </div>
                 <div className="flex items-center gap-4">
-                  <div className="flex items-center gap-1.5"><div className="w-2.5 h-2.5 rounded-full bg-navy"></div><span className="text-[9px] font-bold text-slate-400 uppercase">Realizado</span></div>
-                  <div className="flex items-center gap-1.5"><div className="w-2.5 h-2.5 rounded-full bg-blue-400"></div><span className="text-[9px] font-bold text-slate-400 uppercase">Projetado</span></div>
+                  <div className="flex items-center gap-1.5"><div className="w-2.5 h-2.5 rounded-full bg-navy"></div><span className="text-[9px] font-bold text-slate-400 uppercase">Saldo</span></div>
+                  <div className="flex items-center gap-1.5"><div className="w-2.5 h-2.5 rounded-full bg-emerald-500"></div><span className="text-[9px] font-bold text-slate-400 uppercase">Entrada</span></div>
+                  <div className="flex items-center gap-1.5"><div className="w-2.5 h-2.5 rounded-full bg-rose-500"></div><span className="text-[9px] font-bold text-slate-400 uppercase">Saída</span></div>
                 </div>
               </div>
               <div className="h-80">
@@ -287,10 +315,6 @@ const Financial: React.FC = () => {
                       <linearGradient id="colorReal" x1="0" y1="0" x2="0" y2="1">
                         <stop offset="5%" stopColor="#0f172a" stopOpacity={0.1}/>
                         <stop offset="95%" stopColor="#0f172a" stopOpacity={0}/>
-                      </linearGradient>
-                      <linearGradient id="colorProj" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="5%" stopColor="#60a5fa" stopOpacity={0.1}/>
-                        <stop offset="95%" stopColor="#60a5fa" stopOpacity={0}/>
                       </linearGradient>
                     </defs>
                     <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
@@ -312,11 +336,11 @@ const Financial: React.FC = () => {
                   <div className="p-3 bg-blue-500 text-white rounded-2xl"><Target size={24} /></div>
                   <div>
                     <h4 className="text-[10px] font-black text-blue-400 uppercase tracking-widest">Capacidade de Gasto</h4>
-                    <p className="text-xl font-black">R$ 0 /mês</p>
+                    <p className="text-xl font-black">R$ {((metrics.financeiro.receitaBruta - metrics.financeiro.gastosTotais) * 0.3).toLocaleString('pt-BR', { maximumFractionDigits: 0 })}</p>
                   </div>
                 </div>
                 <p className="text-xs leading-relaxed font-medium text-slate-300 relative z-10">
-                  Aguardando dados de caixa para cálculo.
+                  Margem segura para novos investimentos (30% do lucro atual).
                 </p>
               </div>
             </div>

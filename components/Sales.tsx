@@ -4,14 +4,14 @@ import {
   MessageCircle, Clock, CheckCircle2, Search, Send, User, Users, Flame, 
   ArrowUpDown, AlertCircle, HandCoins, Receipt, DollarSign, ArrowUpRight, 
   Sparkles, Loader2, Network, Activity, Timer, ArrowRight, ArrowDownRight,
-  Calendar, Stethoscope, UserX, Target, Zap
+  Calendar, Stethoscope, UserX, Target, Zap, ChevronDown
 } from 'lucide-react';
 import { analyzeLeadConversation } from '../services/geminiService';
 import { useApp } from '../App';
 import { Lead } from '../types';
 
 const Sales: React.FC = () => {
-  const { dateFilter, setDateFilter, metrics, leads, addLead } = useApp();
+  const { dateFilter, setDateFilter, metrics, leads, addLead, updateLead, addFinancialEntry, user } = useApp();
   const [activeLead, setActiveLead] = useState<Lead | null>(null);
   const [activeTab, setActiveTab] = useState<'chat' | 'stats'>('stats');
   const [aiAnalysis, setAiAnalysis] = useState<string | null>(null);
@@ -32,7 +32,7 @@ const Sales: React.FC = () => {
     const noShowPct = (1 - (metrics.vendas.comparecimento / (metrics.vendas.agendamentos || 1))) * 100;
     const leadsEmFollowUp = Math.round(metrics.marketing.leads * 0.46);
     
-    // Simulação de Follow-up
+    // Simulação de Follow-up (pode ser refinado com dados reais futuros)
     const followUpIniciados = Math.round(leadsEmFollowUp * 0.82);
     const followUpConvertidos = Math.round(followUpIniciados * 0.45);
     const taxaSucessoFollowUp = (followUpConvertidos / (followUpIniciados || 1)) * 100;
@@ -80,12 +80,40 @@ const Sales: React.FC = () => {
             status: 'Novo',
             temperature: 'Cold',
             lastMessage: 'Iniciou contato pelo site',
-            potentialValue: 0
+            potentialValue: user?.ticketValue || 450
         });
         setNewLeadName('');
         setNewLeadPhone('');
     }
   }
+
+  const handleStatusChange = async (e: React.ChangeEvent<HTMLSelectElement>) => {
+    if (!activeLead) return;
+    const newStatus = e.target.value as any;
+    
+    // Atualiza o lead
+    await updateLead({ ...activeLead, status: newStatus });
+    
+    // Se mudou para VENDA, oferece criar a transação financeira
+    if (newStatus === 'Venda') {
+       const confirmFinance = window.confirm(`Parabéns pela venda para ${activeLead.name}! 🚀\n\nDeseja lançar automaticamente uma Receita de R$ ${user?.ticketValue} no Financeiro?`);
+       if (confirmFinance) {
+          await addFinancialEntry({
+             id: crypto.randomUUID(),
+             type: 'receivable',
+             category: 'Consulta Particular',
+             name: `Consulta - ${activeLead.name}`,
+             unitValue: user?.ticketValue || 450,
+             total: user?.ticketValue || 450,
+             status: 'efetuada',
+             date: new Date().toISOString().split('T')[0],
+             discount: 0,
+             addition: 0
+          });
+          alert('Receita lançada com sucesso! O Dashboard Financeiro foi atualizado.');
+       }
+    }
+  };
 
   return (
     <div className="space-y-6 h-[calc(100vh-140px)] flex flex-col">
@@ -163,7 +191,23 @@ const Sales: React.FC = () => {
                 <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between bg-white shrink-0 z-10">
                 <div className="flex items-center gap-4">
                     <div className="w-10 h-10 bg-navy rounded-xl flex items-center justify-center text-white shrink-0"><User size={20} /></div>
-                    <div><h3 className="font-semibold text-navy text-sm leading-tight">{activeLead.name}</h3><span className="text-[9px] text-emerald-500 font-bold tracking-widest uppercase">{activeLead.status}</span></div>
+                    <div>
+                        <h3 className="font-semibold text-navy text-sm leading-tight">{activeLead.name}</h3>
+                        <div className="relative inline-block mt-1">
+                            <select 
+                                value={activeLead.status} 
+                                onChange={handleStatusChange}
+                                className="appearance-none bg-emerald-50 text-emerald-600 font-bold text-[9px] uppercase tracking-widest pl-2 pr-6 py-0.5 rounded cursor-pointer hover:bg-emerald-100 transition-colors focus:outline-none"
+                            >
+                                <option value="Novo">Novo Lead</option>
+                                <option value="Conversa">Em Conversa</option>
+                                <option value="Agendado">Agendado</option>
+                                <option value="Venda">Venda Fechada ($)</option>
+                                <option value="Perdido">Perdido</option>
+                            </select>
+                            <ChevronDown size={10} className="absolute right-1 top-1/2 -translate-y-1/2 text-emerald-600 pointer-events-none" />
+                        </div>
+                    </div>
                 </div>
                 <button onClick={handleAnalyzeLead} disabled={isAnalyzing} className="flex items-center gap-2 bg-indigo-50 text-indigo-600 px-4 py-2 rounded-xl text-[10px] font-bold uppercase tracking-widest hover:bg-indigo-100 transition-all border border-indigo-100">
                     {isAnalyzing ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />} Raio-X da IA
