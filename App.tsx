@@ -1,4 +1,5 @@
-import React, { useState, createContext, useContext, useEffect, useMemo } from 'react';
+
+import React, { useState, createContext, useContext, useEffect, useMemo, useCallback } from 'react';
 import Sidebar from './components/Sidebar';
 import Dashboard from './components/Dashboard';
 import Marketing from './components/Marketing';
@@ -13,76 +14,6 @@ import TermsOfService from './components/TermsOfService';
 import { AppSection, DateRange, ConsolidatedMetrics, FinancialEntry, Lead, Appointment } from './types';
 import { Menu, X, Bot, Loader2, AlertCircle, ArrowRight, ShieldCheck } from 'lucide-react';
 import { supabase } from './lib/supabase';
-
-// --- MOCK DATA GENERATORS ---
-const generateMockFinancials = (): FinancialEntry[] => {
-  const entries: FinancialEntry[] = [];
-  const categories = ['Consulta Particular', 'Procedimento Estético', 'Marketing', 'Aluguel', 'Folha de Pagamento', 'Insumos'];
-  const types = ['receivable', 'receivable', 'payable', 'payable', 'payable', 'payable'] as const;
-  
-  for (let i = 0; i < 60; i++) {
-    const date = new Date();
-    date.setDate(date.getDate() - i);
-    const typeIdx = Math.floor(Math.random() * types.length);
-    const type = types[typeIdx];
-    const category = categories[typeIdx];
-    const value = type === 'receivable' ? (450 + Math.random() * 1500) : (200 + Math.random() * 5000);
-
-    entries.push({
-      id: `mock-fin-${i}`,
-      date: date.toISOString().split('T')[0],
-      type: type,
-      category: category,
-      name: type === 'receivable' ? `Paciente ${i}` : `Fornecedor ${category}`,
-      unitValue: value,
-      total: value,
-      discount: 0,
-      addition: 0,
-      status: Math.random() > 0.1 ? 'efetuada' : 'atrasada'
-    });
-  }
-  return entries;
-};
-
-const generateMockLeads = (): Lead[] => {
-  const leads: Lead[] = [];
-  const statuses = ['Novo', 'Conversa', 'Agendado', 'Venda', 'Perdido'] as const;
-  
-  for (let i = 0; i < 40; i++) {
-    const date = new Date();
-    date.setDate(date.getDate() - Math.floor(Math.random() * 30));
-    const status = statuses[Math.floor(Math.random() * statuses.length)];
-    
-    leads.push({
-      id: `mock-lead-${i}`,
-      name: `Lead Exemplo ${i}`,
-      phone: '11999999999',
-      status: status,
-      temperature: ['Hot', 'Warm', 'Cold'][Math.floor(Math.random() * 3)] as any,
-      lastMessage: 'Gostaria de saber o valor da consulta...',
-      potentialValue: 450,
-      created_at: date.toISOString()
-    });
-  }
-  return leads;
-};
-
-const generateMockAppointments = (): Appointment[] => {
-  const apps: Appointment[] = [];
-  for (let i = -5; i < 10; i++) {
-    const date = new Date();
-    date.setDate(date.getDate() + i);
-    apps.push({
-      id: `mock-app-${i}`,
-      date: date.toISOString().split('T')[0],
-      time: '14:00',
-      patientName: `Paciente Agendado ${i}`,
-      type: 'Avaliação',
-      status: i < 0 ? 'Realizado' : 'Confirmado'
-    });
-  }
-  return apps;
-};
 
 interface User {
   id: string;
@@ -102,10 +33,11 @@ interface AppContextType {
   logout: () => Promise<void>;
   integrations: Record<string, boolean>;
   
-  // Tokens
+  // Tokens Específicos
   metaToken: string | null;
   googleCalendarToken: string | null;
-  googleAdsToken: string | null; // Novo token global
+  googleAdsToken: string | null;
+  googleSheetsToken: string | null;
   
   selectedMetaCampaigns: string[];
   
@@ -113,6 +45,7 @@ interface AppContextType {
   setMetaToken: (token: string | null) => void;
   setGoogleCalendarToken: (token: string | null) => void;
   setGoogleAdsToken: (token: string | null) => void;
+  setGoogleSheetsToken: (token: string | null) => void;
   setSelectedMetaCampaigns: (campaigns: string[]) => void;
   toggleIntegration: (id: string) => void;
   
@@ -170,39 +103,39 @@ const App: React.FC = () => {
   const [isSidebarOpen, setSidebarOpen] = useState(false);
   const [dateFilter, setInternalDateFilter] = useState<DateRange>(calculateRange('7 dias'));
   
-  // Data State
+  // Data State (Single Source of Truth)
   const [financialEntries, setFinancialEntries] = useState<FinancialEntry[]>([]);
   const [leads, setLeads] = useState<Lead[]>([]);
   const [appointments, setAppointments] = useState<Appointment[]>([]);
   
-  // TOKENS
+  // Tokens
   const [metaToken, setMetaToken] = useState<string | null>(localStorage.getItem('meta_token'));
   const [googleCalendarToken, setGoogleCalendarToken] = useState<string | null>(localStorage.getItem('google_calendar_token'));
   const [googleAdsToken, setGoogleAdsToken] = useState<string | null>(localStorage.getItem('google_ads_token'));
+  const [googleSheetsToken, setGoogleSheetsToken] = useState<string | null>(localStorage.getItem('google_sheets_token'));
 
   const [selectedMetaCampaigns, setSelectedMetaCampaigns] = useState<string[]>(JSON.parse(localStorage.getItem('meta_campaigns') || '[]'));
   
-  // Estado das integrações (Visual apenas)
   const [integrations, setIntegrations] = useState<Record<string, boolean>>({
     'google-ads': !!googleAdsToken, 
     'meta-ads': !!metaToken, 
     'wpp': true, 
-    'sheets': false, 
+    'sheets': !!googleSheetsToken, 
     'calendar': !!googleCalendarToken, 
     'crm': false
   });
 
-  // Atualiza integrations quando tokens mudam
   useEffect(() => {
     setIntegrations(prev => ({
       ...prev,
       'google-ads': !!googleAdsToken,
       'meta-ads': !!metaToken,
-      'calendar': !!googleCalendarToken
+      'calendar': !!googleCalendarToken,
+      'sheets': !!googleSheetsToken
     }));
-  }, [googleAdsToken, metaToken, googleCalendarToken]);
+  }, [googleAdsToken, metaToken, googleCalendarToken, googleSheetsToken]);
 
-  // --- OAUTH CALLBACK HANDLER (META ADS) ---
+  // --- OAUTH CALLBACK ---
   useEffect(() => {
     const hash = window.location.hash;
     if (hash && hash.includes('access_token')) {
@@ -216,7 +149,71 @@ const App: React.FC = () => {
     }
   }, []);
 
-  // --- OAUTH SESSION HANDLER (SUPABASE / GOOGLE) ---
+  // --- DATA FETCHING FUNCTIONS (Memoized) ---
+  const fetchFinancials = useCallback(async () => {
+    if (!supabase) return;
+    try {
+      const { data } = await supabase.from('transactions').select('*').order('date', { ascending: false });
+      if (data) {
+        const mapped = data.map((d: any) => ({ ...d, unitValue: Number(d.unit_value), total: Number(d.total) }));
+        setFinancialEntries(mapped);
+      }
+    } catch (err) { console.error(err); }
+  }, []);
+
+  const fetchLeads = useCallback(async () => {
+    if (!supabase) return;
+    try {
+      const { data } = await supabase.from('leads').select('*').order('created_at', { ascending: false });
+      if (data) {
+        const mapped = data.map((d: any) => ({ ...d, potentialValue: Number(d.potential_value), lastInteraction: '1d' }));
+        setLeads(mapped);
+      }
+    } catch (err) { console.error(err); }
+  }, []);
+
+  const fetchAppointments = useCallback(async () => {
+    if (!supabase) return;
+    try {
+      const { data } = await supabase.from('appointments').select('*').order('date', { ascending: true });
+      if (data) {
+        const mapped = data.map((d: any) => ({ ...d, patientName: d.patient_name }));
+        setAppointments(mapped);
+      }
+    } catch (err) { console.error(err); }
+  }, []);
+
+  // --- SUPABASE REALTIME SUBSCRIPTIONS (THE GLUE) ---
+  useEffect(() => {
+    if (!isAuthenticated || !user || !supabase) return;
+
+    // Carregamento inicial
+    fetchFinancials();
+    fetchLeads();
+    fetchAppointments();
+
+    // Inscreve para mudanças no banco de dados em Tempo Real
+    const channel = supabase.channel('main-db-changes')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'transactions' }, () => {
+          console.log('⚡ Atualização Financeira em Tempo Real');
+          fetchFinancials();
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'leads' }, () => {
+          console.log('⚡ Atualização de Leads em Tempo Real');
+          fetchLeads();
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'appointments' }, () => {
+          console.log('⚡ Atualização de Agenda em Tempo Real');
+          fetchAppointments();
+      })
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [isAuthenticated, user, fetchFinancials, fetchLeads, fetchAppointments]);
+
+  // --- AUTH SESSION HANDLER ---
   useEffect(() => {
     if (!supabase) return;
     
@@ -226,116 +223,53 @@ const App: React.FC = () => {
        
        if (session) {
           fetchUserProfile(session.user.id);
+          const authIntent = localStorage.getItem('auth_intent');
           
-          // Lógica de recuperação de token do Google
-          // O Supabase retorna o provider_token na sessão imediatamente após o redirect do OAuth.
-          // Como usamos Supabase Auth APENAS para Google (Meta é manual), podemos assumir que
-          // se existe provider_token, é um token Google válido.
           if (session.provider_token) {
-             console.log("Novo token Google detectado, salvando...");
-             setGoogleAdsToken(session.provider_token);
-             localStorage.setItem('google_ads_token', session.provider_token);
-             
-             // Opcional: Salvar também para Calendar se não existir, já que é o mesmo Google Account
-             if (!localStorage.getItem('google_calendar_token')) {
-                 setGoogleCalendarToken(session.provider_token);
-                 localStorage.setItem('google_calendar_token', session.provider_token);
+             if (authIntent === 'google_ads') {
+                setGoogleAdsToken(session.provider_token);
+                localStorage.setItem('google_ads_token', session.provider_token);
+                localStorage.removeItem('auth_intent');
+             } 
+             else if (authIntent === 'google_calendar') {
+                setGoogleCalendarToken(session.provider_token);
+                localStorage.setItem('google_calendar_token', session.provider_token);
+                localStorage.removeItem('auth_intent');
+             }
+             else if (authIntent === 'google_sheets') {
+                setGoogleSheetsToken(session.provider_token);
+                localStorage.setItem('google_sheets_token', session.provider_token);
+                localStorage.removeItem('auth_intent');
              }
           }
        } else {
           setUser(null);
-          // Não limpamos os tokens aqui para evitar desconexão acidental em refresh
        }
        setAuthLoading(false);
     };
 
     supabase.auth.getSession().then(({ data: { session } }) => handleSession(session));
-
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-       handleSession(session);
-    });
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => handleSession(session));
     return () => subscription.unsubscribe();
   }, []);
 
-  useEffect(() => {
-    if (isAuthenticated && user) {
-      fetchFinancials();
-      fetchLeads();
-      fetchAppointments();
-    }
-  }, [isAuthenticated, user]);
-
   const fetchUserProfile = async (userId: string) => {
     try {
-      const { data, error } = await supabase!.from('profiles').select('*').eq('id', userId).single();
+      const { data } = await supabase!.from('profiles').select('*').eq('id', userId).single();
       if (data) {
-        setUser({ id: data.id, name: data.name || 'Cozmos Admin', email: data.email || '', clinic: data.clinic_name || 'Clínica Cozmos', plan: 'pro', ticketValue: Number(data.ticket_value) || 450 });
+        setUser({ id: data.id, name: data.name || 'Admin', email: data.email || '', clinic: data.clinic_name || 'Clínica', plan: 'pro', ticketValue: Number(data.ticket_value) || 450 });
       } else {
-        setUser({ id: userId, name: 'Cozmos Admin', email: 'cozmos.atendimento@gmail.com', clinic: 'Clínica Cozmos', plan: 'pro', ticketValue: 450 });
+        setUser({ id: userId, name: 'Admin', email: 'admin@cozmos.com', clinic: 'Minha Clínica', plan: 'pro', ticketValue: 450 });
       }
     } catch (err) { console.error(err); }
-  };
-
-  const fetchFinancials = async () => {
-    try {
-      const { data, error } = await supabase!.from('transactions').select('*').order('date', { ascending: false });
-      if (data && data.length > 0) {
-        const mapped = data.map((d: any) => ({ ...d, unitValue: Number(d.unit_value), total: Number(d.total) }));
-        setFinancialEntries(mapped);
-      } else {
-        setFinancialEntries(generateMockFinancials());
-      }
-    } catch (err) { 
-        console.error(err); 
-        setFinancialEntries(generateMockFinancials());
-    }
-  };
-
-  const fetchLeads = async () => {
-    try {
-      const { data, error } = await supabase!.from('leads').select('*').order('created_at', { ascending: false });
-      if (data && data.length > 0) {
-        const mapped = data.map((d: any) => ({ ...d, potentialValue: Number(d.potential_value), lastInteraction: '1d' }));
-        setLeads(mapped);
-      } else {
-        setLeads(generateMockLeads());
-      }
-    } catch (err) { 
-        console.error(err);
-        setLeads(generateMockLeads()); 
-    }
-  };
-
-  const fetchAppointments = async () => {
-    try {
-      const { data, error } = await supabase!.from('appointments').select('*').order('date', { ascending: true });
-      if (data && data.length > 0) {
-        const mapped = data.map((d: any) => ({ ...d, patientName: d.patient_name }));
-        setAppointments(mapped);
-      } else {
-        setAppointments(generateMockAppointments());
-      }
-    } catch (err) { 
-        console.error(err);
-        setAppointments(generateMockAppointments());
-    }
   };
 
   const login = async (email: string, pass: string) => {
     try {
       const { error } = await supabase!.auth.signInWithPassword({ email, password: pass });
-      if (error) {
-        if (email === 'cozmos.atendimento@gmail.com' && pass === 'Hymura.598') {
-          setIsAuthenticated(true);
-          setUser({ id: 'demo-user', name: 'Cozmos Admin', email, clinic: 'Clínica Cozmos', plan: 'pro', ticketValue: 450 });
-          return;
-        }
-        throw error;
-      }
+      if (error) throw error;
     } catch (err: any) {
-      if (err.message.includes("Invalid login credentials")) {
-        throw new Error("Credenciais inválidas.");
-      }
+      if (err.message.includes("Invalid login credentials")) throw new Error("Credenciais inválidas.");
       throw err;
     }
   };
@@ -347,42 +281,36 @@ const App: React.FC = () => {
 
   const logout = async () => { 
     await supabase!.auth.signOut(); 
-    localStorage.removeItem('meta_token');
-    localStorage.removeItem('google_ads_token');
-    localStorage.removeItem('google_calendar_token');
-    localStorage.removeItem('google_ads_demo_mode');
+    localStorage.clear(); // Limpa tudo para garantir
     setMetaToken(null);
     setGoogleAdsToken(null);
     setGoogleCalendarToken(null);
+    setGoogleSheetsToken(null);
     setIsAuthenticated(false); 
   };
 
+  // --- CRUD OPERATIONS (OPTIMISTIC UI or DIRECT DB) ---
+  // O Realtime já atualiza a UI, então aqui focamos apenas em enviar para o Supabase
   const addFinancialEntry = async (entry: FinancialEntry) => {
-    const newEntry = { ...entry, id: crypto.randomUUID() };
-    setFinancialEntries(prev => [newEntry, ...prev]);
-    supabase!.from('transactions').insert([{
+    await supabase!.from('transactions').insert([{
        user_id: user?.id, type: entry.type, category: entry.category, name: entry.name,
        unit_value: entry.unitValue, total: entry.total, status: entry.status, date: entry.date
-    }]).then(({error}) => { if(error) console.error("Erro ao salvar no banco (ignorando em modo demo)", error); });
+    }]);
   };
 
   const updateFinancialEntry = async (entry: FinancialEntry) => {
-    setFinancialEntries(prev => prev.map(e => e.id === entry.id ? entry : e));
-    supabase!.from('transactions').update({
+    await supabase!.from('transactions').update({
        type: entry.type, category: entry.category, name: entry.name,
        unit_value: entry.unitValue, total: entry.total, status: entry.status, date: entry.date
     }).eq('id', entry.id);
   };
 
   const deleteFinancialEntry = async (id: string) => {
-    setFinancialEntries(prev => prev.filter(e => e.id !== id));
-    supabase!.from('transactions').delete().eq('id', id);
+    await supabase!.from('transactions').delete().eq('id', id);
   };
 
   const addLead = async (lead: Lead) => {
-    const newLead = { ...lead, id: crypto.randomUUID(), created_at: new Date().toISOString() };
-    setLeads(prev => [newLead, ...prev]);
-    supabase!.from('leads').insert([{
+    await supabase!.from('leads').insert([{
         user_id: user?.id, name: lead.name, phone: lead.phone, status: lead.status,
         temperature: lead.temperature, last_message: lead.lastMessage, potential_value: lead.potentialValue
     }]);
@@ -392,28 +320,34 @@ const App: React.FC = () => {
     if (!user) return;
     const updatedUser = { ...user, ...updates };
     setUser(updatedUser);
-    
     if (user.id !== 'demo-user' && supabase) {
-      const { error } = await supabase.from('profiles').update({
-        name: updates.name,
-        clinic_name: updates.clinic,
-        ticket_value: updates.ticketValue
+      await supabase.from('profiles').update({
+        name: updates.name, clinic_name: updates.clinic, ticket_value: updates.ticketValue
       }).eq('id', user.id);
     }
   };
 
+  // --- CONSOLIDATED METRICS LOGIC (THE BRAIN) ---
   const consolidatedMetrics = useMemo((): ConsolidatedMetrics => {
+    // 1. Filtragem por data
     const filteredEntries = financialEntries.filter(e => e.date >= dateFilter.start && e.date <= dateFilter.end && e.status === 'efetuada');
     const filteredLeads = leads.filter(l => l.created_at && l.created_at.split('T')[0] >= dateFilter.start && l.created_at.split('T')[0] <= dateFilter.end);
     const filteredAppointments = appointments.filter(a => a.date >= dateFilter.start && a.date <= dateFilter.end);
 
+    // 2. Financeiro
     const receitaBruta = filteredEntries.filter(e => e.type === 'receivable').reduce((acc, curr) => acc + curr.total, 0);
     const gastosOperacionais = filteredEntries.filter(e => e.type === 'payable' && e.category !== 'Marketing').reduce((acc, curr) => acc + curr.total, 0);
-    const investimentoMkt = filteredEntries.filter(e => e.type === 'payable' && e.category === 'Marketing').reduce((acc, curr) => acc + curr.total, 0);
-    const finalMarketingSpend = investimentoMkt > 0 ? investimentoMkt : (filteredLeads.length * 15); 
+    
+    // 3. Marketing (Interligação Chave)
+    // Soma gastos manuais de Marketing lançados no Financeiro
+    const investimentoMktManual = filteredEntries.filter(e => e.type === 'payable' && e.category === 'Marketing').reduce((acc, curr) => acc + curr.total, 0);
+    // Aqui poderíamos somar o API spend se tivéssemos armazenado no banco, mas por enquanto usamos o manual como base sólida
+    const finalMarketingSpend = investimentoMktManual; 
+
     const gastosTotais = gastosOperacionais + finalMarketingSpend;
 
-    const leadsCount = filteredLeads.length || 1;
+    // 4. Vendas
+    const leadsCount = filteredLeads.length || 0;
     const conversas = filteredLeads.filter(l => l.status !== 'Novo').length;
     const vendas = filteredLeads.filter(l => l.status === 'Venda').length;
     const agendamentos = filteredAppointments.length;
@@ -421,28 +355,24 @@ const App: React.FC = () => {
 
     return {
       marketing: {
-        investimento: finalMarketingSpend,
+        investimento: finalMarketingSpend, // Agora reflete o financeiro 'Marketing'
         leads: leadsCount,
-        clicks: leadsCount * 12,
+        clicks: leadsCount * 12, 
         impressions: leadsCount * 12 * 40,
-        cpl: finalMarketingSpend / leadsCount,
-        ctr: 2.1
+        cpl: (leadsCount > 0 && finalMarketingSpend > 0) ? finalMarketingSpend / leadsCount : 0,
+        ctr: leadsCount > 0 ? 2.1 : 0
       },
       vendas: {
-        conversas,
-        agendamentos,
-        comparecimento,
-        vendas,
-        taxaConversao: (agendamentos / leadsCount) * 100,
+        conversas, agendamentos, comparecimento, vendas,
+        taxaConversao: leadsCount > 0 ? (agendamentos / leadsCount) * 100 : 0,
         cac: agendamentos > 0 ? finalMarketingSpend / agendamentos : 0,
         cpv: vendas > 0 ? finalMarketingSpend / vendas : 0
       },
       financeiro: {
-        receitaBruta,
-        gastosTotais,
+        receitaBruta, gastosTotais,
         lucroLiquido: receitaBruta - gastosTotais,
         roi: gastosTotais > 0 ? ((receitaBruta - gastosTotais) / gastosTotais) * 100 : 0,
-        ticketMedio: vendas > 0 ? receitaBruta / vendas : (user?.ticketValue || 450)
+        ticketMedio: vendas > 0 ? receitaBruta / vendas : 0
       }
     };
   }, [dateFilter, financialEntries, leads, appointments, user?.ticketValue]);
@@ -474,10 +404,10 @@ const App: React.FC = () => {
       user, updateUser, isAuthenticated, login, signUp, logout, 
       integrations, 
       
-      // Tokens
       metaToken, setMetaToken,
       googleCalendarToken, setGoogleCalendarToken,
       googleAdsToken, setGoogleAdsToken,
+      googleSheetsToken, setGoogleSheetsToken,
 
       selectedMetaCampaigns, setSelectedMetaCampaigns, toggleIntegration, 
       dateFilter, setDateFilter, metrics: consolidatedMetrics,
@@ -500,6 +430,7 @@ const App: React.FC = () => {
   );
 };
 
+// ... (AuthScreen Component Mantido Igual) ...
 const AuthScreen = ({ onLogin, onSignUp }: { onLogin: any, onSignUp: any }) => {
   const [isLogin, setIsLogin] = useState(true);
   const [email, setEmail] = useState('');

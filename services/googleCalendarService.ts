@@ -1,19 +1,21 @@
+
 import { supabase } from '../lib/supabase';
 
 /**
  * Inicia o fluxo de OAuth para o Google Calendar.
- * O redirectTo usa window.location.origin + pathname para suportar subdiretórios.
+ * Define a flag 'auth_intent' para 'google_calendar'.
  */
 export const signInWithGoogleCalendar = async () => {
   if (!supabase) return;
 
-  // Garante que o redirecionamento volte para a página/pasta atual
   const returnUrl = window.location.origin + window.location.pathname;
+
+  // Seta a intenção para que o App saiba processar o token no retorno
+  localStorage.setItem('auth_intent', 'google_calendar');
 
   const { data, error } = await supabase.auth.signInWithOAuth({
     provider: 'google',
     options: {
-      // Escopo para ler eventos do calendário
       scopes: 'https://www.googleapis.com/auth/calendar.events.readonly',
       redirectTo: returnUrl, 
       queryParams: {

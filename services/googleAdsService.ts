@@ -1,15 +1,20 @@
+
 import { supabase } from '../lib/supabase';
 import { GoogleAdAccount } from '../types';
 
 /**
- * Inicia o fluxo de Login com Google usando Supabase.
- * Solicita escopo do Google Ads automaticamente.
+ * Inicia o fluxo de Login com Google Ads.
+ * Define a flag 'auth_intent' para 'google_ads' para que o App.tsx saiba
+ * onde salvar o token retornado.
  */
 export const signInWithGoogleAds = async () => {
   if (!supabase) return;
 
-  // Garante que o redirecionamento volte para a página/pasta atual, não apenas para o domínio raiz
+  // Garante que o redirecionamento volte para a página/pasta atual
   const returnUrl = window.location.origin + window.location.pathname;
+
+  // Seta a intenção para que o App saiba processar o token no retorno
+  localStorage.setItem('auth_intent', 'google_ads');
 
   const { data, error } = await supabase.auth.signInWithOAuth({
     provider: 'google',
@@ -45,7 +50,6 @@ export const getAccessibleCustomers = async (accessToken: string, developerToken
       }
     });
 
-    // Se a resposta não for OK (ex: erro de CORS ou 403), lança erro.
     if (!response.ok) {
        console.warn(`Google Ads API Warning: ${response.statusText}. CORS pode estar bloqueando a requisição direta.`);
        throw new Error(`Google Ads API Error: ${response.statusText}`);
@@ -57,11 +61,10 @@ export const getAccessibleCustomers = async (accessToken: string, developerToken
       throw new Error(data.error.message);
     }
 
-    // A API retorna resourceNames no formato "customers/1234567890"
     return (data.resourceNames || []).map((resourceName: string) => ({
       id: resourceName.replace('customers/', ''),
       name: resourceName,
-      descriptiveName: `Conta ${resourceName.replace('customers/', '')}`, // A API listAccessibleCustomers não retorna o nome descritivo, apenas o ID
+      descriptiveName: `Conta ${resourceName.replace('customers/', '')}`, 
       currencyCode: 'BRL',
       timeZone: 'America/Sao_Paulo'
     }));
@@ -79,7 +82,6 @@ export const getGoogleCampaigns = async (customerId: string, accessToken: string
   const cleanCustomerId = customerId.replace(/-/g, '');
   const url = `https://googleads.googleapis.com/v16/customers/${cleanCustomerId}/googleAds:search`;
 
-  // Query GAQL para buscar métricas essenciais
   let query = `
     SELECT 
       campaign.id, 

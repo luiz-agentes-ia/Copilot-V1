@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect, useMemo } from 'react';
 import { 
   Instagram, DollarSign, TrendingUp, Bot, Users, Target, MousePointer2, Eye,
@@ -8,7 +9,7 @@ import {
   ResponsiveContainer, Cell
 } from 'recharts';
 import { useApp } from '../App';
-import { getCampaignInsights } from '../services/metaService';
+import { getCampaignInsights, getMetaCampaigns } from '../services/metaService';
 import { getGoogleCampaigns } from '../services/googleAdsService';
 
 const GoogleIcon = ({ size = 16 }: { size?: number }) => (
@@ -21,17 +22,15 @@ const GoogleIcon = ({ size = 16 }: { size?: number }) => (
 );
 
 const Marketing: React.FC = () => {
-  const { dateFilter, setDateFilter, metaToken, googleAdsToken } = useApp();
+  const { dateFilter, setDateFilter, metaToken, googleAdsToken, metrics } = useApp();
   const [loading, setLoading] = useState(false);
-  const [platformFilter, setPlatformFilter] = useState<'all' | 'google' | 'meta'>('all');
+  const [platformFilter, setPlatformFilter] = useState<'all' | 'google' | 'meta' | 'offline'>('all');
   
   // States para dados reais
   const [realMetaCampaigns, setRealMetaCampaigns] = useState<any[]>([]);
   const [realGoogleCampaigns, setRealGoogleCampaigns] = useState<any[]>([]);
 
-  // Verifica se está conectado em ALGUMA plataforma
   const isConnected = !!metaToken || !!googleAdsToken;
-
   const DEV_TOKEN = (import.meta as any)?.env?.VITE_GOOGLE_ADS_DEV_TOKEN || 'SEU_DEVELOPER_TOKEN_AQUI';
 
   // --- BUSCA DADOS REAIS META ---
@@ -41,16 +40,11 @@ const Marketing: React.FC = () => {
         setLoading(true);
         try {
           const accountId = localStorage.getItem('selected_meta_account_id');
-          if (!accountId) {
-             setLoading(false);
-             return; 
-          }
+          if (!accountId) { setLoading(false); return; }
 
-          const response = await fetch(`https://graph.facebook.com/v19.0/${accountId}/campaigns?fields=name,id,status&access_token=${metaToken}`);
-          const data = await response.json();
-          
-          if (data.data) {
-             const campaignsWithInsights = await Promise.all(data.data.map(async (camp: any) => {
+          const campaignsData = await getMetaCampaigns(accountId, metaToken);
+          if (campaignsData && campaignsData.length > 0) {
+             const campaignsWithInsights = await Promise.all(campaignsData.map(async (camp: any) => {
                 try {
                     const insights = await getCampaignInsights(camp.id, metaToken, { start: dateFilter.start, end: dateFilter.end });
                     return { name: camp.name, platform: 'meta', ...insights };
@@ -58,14 +52,13 @@ const Marketing: React.FC = () => {
                     return { name: camp.name, platform: 'meta', spend: 0, clicks: 0, impressions: 0, conversions: 0 };
                 }
              }));
-             // Filtra apenas campanhas com algum gasto (opcional, mas bom para limpeza)
              setRealMetaCampaigns(campaignsWithInsights);
           } else {
              setRealMetaCampaigns([]);
           }
         } catch (error) {
            console.error("Erro Meta:", error);
-           setRealMetaCampaigns([]); // Zera em caso de erro
+           setRealMetaCampaigns([]);
         } finally {
            setLoading(false);
         }
@@ -82,28 +75,19 @@ const Marketing: React.FC = () => {
         if (googleAdsToken) {
             setLoading(true);
             const accountId = localStorage.getItem('selected_google_account_id');
-            
-            if (!accountId) {
-                setRealGoogleCampaigns([]);
-                setLoading(false);
-                return;
-            }
+            if (!accountId) { setRealGoogleCampaigns([]); setLoading(false); return; }
 
             try {
-                // Busca dados reais usando a API
                 const results = await getGoogleCampaigns(accountId, googleAdsToken, DEV_TOKEN, { start: dateFilter.start, end: dateFilter.end });
-                
                 const mappedCampaigns = results.map((row: any) => ({
                     name: row.campaign.name,
                     platform: 'google',
-                    // Google Ads cost is in micros (multiply by 10^-6)
                     spend: (parseInt(row.metrics.costMicros) || 0) / 1000000,
                     clicks: parseInt(row.metrics.clicks) || 0,
                     impressions: parseInt(row.metrics.impressions) || 0,
-                    leads: parseFloat(row.metrics.conversions) || 0, // Usando conversões como leads
+                    leads: parseFloat(row.metrics.conversions) || 0, 
                     status: row.campaign.status
                 }));
-                
                 setRealGoogleCampaigns(mappedCampaigns);
             } catch (error) {
                 console.error("Erro ao buscar campanhas Google:", error);
@@ -119,32 +103,40 @@ const Marketing: React.FC = () => {
   }, [googleAdsToken, dateFilter]);
 
 
-  // --- CONSOLIDAÇÃO DE DADOS ---
+  // --- CONSOLIDAÇÃO DE DADOS (API + FINANCEIRO) ---
   const campaigns = useMemo(() => {
-    // MOCK DATA (Apenas se NÃO estiver conectado em NADA)
-    const mockGoogle = [
-      { name: 'Google Search - Institucional', platform: 'google', spend: 450, leads: 12, impressions: 3200, clicks: 140 },
-      { name: 'Google Display - Remarketing', platform: 'google', spend: 210, leads: 5, impressions: 15000, clicks: 80 },
-    ];
-    const mockMeta = [
-      { name: 'Botox Face - Instagram', platform: 'meta', spend: 850, leads: 34, impressions: 12000, clicks: 210 },
-      { name: 'Preenchimento Labial', platform: 'meta', spend: 620, leads: 22, impressions: 8500, clicks: 150 },
-    ];
+      // Combina campanhas de API
+      const apiCampaigns = [...realGoogleCampaigns, ...realMetaCampaigns];
+      
+      // Calcula quanto foi gasto em APIs
+      const apiSpend = apiCampaigns.reduce((sum, c) => sum + (c.spend || 0), 0);
+      
+      // Pega o gasto TOTAL de marketing do Financeiro (que inclui APIs se lançadas, ou manual)
+      // Se metrics.marketing.investimento for MAIOR que o apiSpend, significa que tem gasto manual (ex: Panfletos, Influencers)
+      const totalMarketingFinance = metrics.marketing.investimento;
+      const manualSpend = Math.max(0, totalMarketingFinance - apiSpend);
 
-    if (isConnected) {
-        // MODO REAL: Junta o que tiver de real. Se um deles estiver vazio, fica vazio.
-        // IMPORTANTE: Isso garante que se o usuário conectou, mas a API não retornou nada, ele vê ZERO.
-        return [...realGoogleCampaigns, ...realMetaCampaigns];
-    } else {
-        // MODO DEMO: Mostra dados fictícios apenas se NADA estiver conectado.
-        return [...mockGoogle, ...mockMeta];
-    }
-  }, [isConnected, realMetaCampaigns, realGoogleCampaigns]);
+      // Adiciona uma campanha "Offline / Outros" se houver diferença
+      if (manualSpend > 0) {
+          apiCampaigns.push({
+              name: 'Outros / Manual (Financeiro)',
+              platform: 'offline',
+              spend: manualSpend,
+              clicks: 0,
+              impressions: 0,
+              conversions: 0, // Poderia ser estimado
+              cpc: 0,
+              ctr: 0
+          });
+      }
+
+      return apiCampaigns;
+  }, [realMetaCampaigns, realGoogleCampaigns, metrics.marketing.investimento]);
 
 
   // CÁLCULO DE TOTAIS
   const totalSpend = campaigns.reduce((acc, c) => acc + c.spend, 0);
-  const totalLeads = campaigns.reduce((acc, c) => acc + (c.leads || c.conversions || 0), 0);
+  const totalLeads = campaigns.reduce((acc, c) => acc + (c.leads || c.conversions || 0), 0) + (metrics.marketing.leads - (realGoogleCampaigns.reduce((a,b)=>a+(b.leads||0),0) + realMetaCampaigns.reduce((a,b)=>a+(b.conversions||0),0))); // Soma leads manuais do CRM se não vierem da API
   const totalImpressions = campaigns.reduce((acc, c) => acc + c.impressions, 0);
   const cpl = totalLeads > 0 ? totalSpend / totalLeads : 0;
   const conversions = Math.round(totalLeads * 0.12);
@@ -153,43 +145,13 @@ const Marketing: React.FC = () => {
     ? campaigns 
     : campaigns.filter(c => c.platform === platformFilter);
 
-  // Stats por Canal
-  const channelStats = useMemo(() => {
-    const googleData = campaigns.filter(c => c.platform === 'google');
-    const metaData = campaigns.filter(c => c.platform === 'meta');
-    
-    const calcStats = (data: any[]) => {
-       const spend = data.reduce((a, b) => a + b.spend, 0);
-       const leads = data.reduce((a, b) => a + (b.leads || b.conversions || 0), 0);
-       return {
-          spend,
-          leads,
-          cpl: leads > 0 ? spend / leads : 0,
-          qualifiedLeads: Math.round(leads * 0.3),
-          qualifiedRate: leads > 0 ? 30.0 : 0
-       };
-    };
-
-    return [
-      { id: 'google', name: 'Google Ads', icon: <GoogleIcon />, ...calcStats(googleData) },
-      { id: 'meta', name: 'Meta Ads', icon: <Instagram size={16} className="text-pink-600" />, ...calcStats(metaData) }
-    ];
-  }, [campaigns]);
-
-  const filteredChannelStats = platformFilter === 'all' 
-    ? channelStats 
-    : channelStats.filter(c => c.id === platformFilter);
-
   return (
     <div className="space-y-12 animate-in fade-in duration-500 pb-20">
       <header className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
         <div>
           <h2 className="text-2xl font-semibold text-navy tracking-tight">Performance de Tráfego Pago</h2>
           <div className="flex items-center gap-2 mt-1">
-            <p className="text-xs text-slate-500 font-light italic">Monitoramento em tempo real de Google e Meta Ads.</p>
-            {!isConnected && (
-              <span className="bg-amber-50 text-amber-700 text-[9px] font-bold px-2 py-0.5 rounded uppercase tracking-widest border border-amber-100">Modo Demo (Dados Simulados)</span>
-            )}
+            <p className="text-xs text-slate-500 font-light italic">Monitoramento unificado (Google, Meta & Financeiro).</p>
             {isConnected && (
                <span className="bg-emerald-50 text-emerald-700 text-[9px] font-bold px-2 py-0.5 rounded uppercase tracking-widest border border-emerald-100 flex items-center gap-1"><Zap size={8} fill="currentColor"/> Dados Reais Conectados</span>
             )}
@@ -213,10 +175,9 @@ const Marketing: React.FC = () => {
           <div className="bg-blue-50 border border-blue-100 p-6 rounded-2xl flex items-center gap-4">
               <div className="p-3 bg-white rounded-full text-blue-500 shadow-sm"><AlertCircle size={24} /></div>
               <div>
-                  <h3 className="text-sm font-bold text-navy">Conectado, mas sem dados recentes.</h3>
+                  <h3 className="text-sm font-bold text-navy">Sem dados de campanha ativos.</h3>
                   <p className="text-xs text-slate-500 mt-1">
-                      Não encontramos campanhas ativas ou gastos no período selecionado ({dateFilter.label}). 
-                      Verifique se selecionou a conta correta ou aumente o período de data.
+                      Não encontramos gastos nas APIs nem lançamentos de "Marketing" no Financeiro para o período ({dateFilter.label}).
                   </p>
               </div>
           </div>
@@ -225,7 +186,7 @@ const Marketing: React.FC = () => {
       {loading ? (
         <div className="h-96 flex flex-col items-center justify-center gap-4 bg-white rounded-[40px] border border-slate-200">
           <Loader2 size={32} className="text-navy animate-spin" />
-          <p className="text-[10px] font-bold text-navy uppercase tracking-widest">Sincronizando dados das APIs...</p>
+          <p className="text-[10px] font-bold text-navy uppercase tracking-widest">Sincronizando dados das APIs e Financeiro...</p>
         </div>
       ) : (
         <>
@@ -235,7 +196,8 @@ const Marketing: React.FC = () => {
                 <span className="text-[10px] font-medium text-slate-400 uppercase tracking-widest">Investimento Total</span>
                 <div className="p-2 bg-blue-50 text-blue-600 rounded-lg"><DollarSign size={16} /></div>
               </div>
-              <p className="text-2xl font-bold text-navy tracking-tight">R$ {totalSpend.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</p>
+              {/* Usa metrics.marketing.investimento diretamente pois ele já consolida tudo no App.tsx */}
+              <p className="text-2xl font-bold text-navy tracking-tight">R$ {metrics.marketing.investimento.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</p>
             </div>
 
             <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm transition-all hover:shadow-md group">
@@ -243,7 +205,8 @@ const Marketing: React.FC = () => {
                 <span className="text-[10px] font-medium text-slate-400 uppercase tracking-widest">Leads Capturados</span>
                 <div className="p-2 bg-indigo-50 text-indigo-600 rounded-lg"><Users size={16} /></div>
               </div>
-              <p className="text-2xl font-bold text-navy tracking-tight">{totalLeads}</p>
+              {/* Usa metrics do App.tsx que conta os leads reais do banco */}
+              <p className="text-2xl font-bold text-navy tracking-tight">{metrics.marketing.leads}</p>
             </div>
 
             <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm transition-all hover:shadow-md group">
@@ -251,7 +214,7 @@ const Marketing: React.FC = () => {
                 <span className="text-[10px] font-medium text-slate-400 uppercase tracking-widest">Custo por Lead (CPL)</span>
                 <div className="p-2 bg-emerald-50 text-emerald-600 rounded-lg"><Target size={16} /></div>
               </div>
-              <p className="text-2xl font-bold text-navy tracking-tight">R$ {cpl.toFixed(2)}</p>
+              <p className="text-2xl font-bold text-navy tracking-tight">R$ {metrics.marketing.cpl.toFixed(2)}</p>
             </div>
 
             <div className="bg-navy p-6 rounded-2xl text-white shadow-xl relative overflow-hidden group border border-white/5">
@@ -265,14 +228,14 @@ const Marketing: React.FC = () => {
             </div>
           </div>
 
-          {campaigns.length > 0 && (
+          {campaigns.length > 0 ? (
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
             <div className="lg:col-span-2 space-y-6">
               <div className="bg-white p-8 rounded-[40px] border border-slate-200 shadow-sm">
                 <div className="flex justify-between items-center mb-10">
                   <div>
                     <h3 className="text-[10px] font-bold text-navy uppercase tracking-widest">Investimento por Campanha</h3>
-                    <p className="text-[10px] text-slate-400 font-medium uppercase tracking-widest mt-1">Análise de Performance Individual</p>
+                    <p className="text-[10px] text-slate-400 font-medium uppercase tracking-widest mt-1">Análise de Performance Individual (API + Manual)</p>
                   </div>
                 </div>
                 <div className="h-80">
@@ -284,54 +247,18 @@ const Marketing: React.FC = () => {
                       <Tooltip cursor={{ fill: '#f8fafc', radius: 8 }} contentStyle={{ borderRadius: '16px', border: 'none', boxShadow: '0 10px 30px rgba(0,0,0,0.08)' }} />
                       <Bar dataKey="spend" radius={[6, 6, 0, 0]} barSize={40}>
                         {activeCampaigns.map((entry, index) => (
-                          <Cell key={`cell-${index}`} fill={index % 2 === 0 ? '#0f172a' : '#3b82f6'} />
+                          <Cell key={`cell-${index}`} fill={entry.platform === 'google' ? '#4285F4' : entry.platform === 'meta' ? '#E1306C' : '#0f172a'} />
                         ))}
                       </Bar>
                     </RechartsBarChart>
                   </ResponsiveContainer>
                 </div>
               </div>
-              
-              <div className="bg-white rounded-[40px] border border-slate-200 shadow-sm overflow-hidden">
-                <div className="px-8 py-6 border-b border-slate-100 flex justify-between items-center bg-slate-50/50">
-                   <h3 className="font-black text-navy uppercase text-xs tracking-[0.2em]">Performance por Origem</h3>
-                   <div className="flex bg-white p-1 rounded-xl border border-slate-200">
-                      <button onClick={() => setPlatformFilter('all')} className={`px-3 py-1 text-[9px] font-bold uppercase rounded-lg transition-all ${platformFilter === 'all' ? 'bg-navy text-white shadow-sm' : 'text-slate-400 hover:text-navy'}`}>Todos</button>
-                      <button onClick={() => setPlatformFilter('google')} className={`px-3 py-1 text-[9px] font-bold uppercase rounded-lg transition-all ${platformFilter === 'google' ? 'bg-navy text-white shadow-sm' : 'text-slate-400 hover:text-navy'}`}>Google</button>
-                      <button onClick={() => setPlatformFilter('meta')} className={`px-3 py-1 text-[9px] font-bold uppercase rounded-lg transition-all ${platformFilter === 'meta' ? 'bg-navy text-white shadow-sm' : 'text-slate-400 hover:text-navy'}`}>Meta</button>
-                   </div>
-                </div>
-                <div className="overflow-x-auto">
-                   <table className="w-full text-left">
-                      <thead className="bg-slate-50/30">
-                         <tr>
-                            <th className="px-8 py-4 text-[9px] font-black text-slate-400 uppercase tracking-widest">Canal</th>
-                            <th className="px-8 py-4 text-[9px] font-black text-slate-400 uppercase tracking-widest text-right">Investimento</th>
-                            <th className="px-8 py-4 text-[9px] font-black text-slate-400 uppercase tracking-widest text-right">Leads</th>
-                            <th className="px-8 py-4 text-[9px] font-black text-slate-400 uppercase tracking-widest text-right">CPL</th>
-                         </tr>
-                      </thead>
-                      <tbody className="divide-y divide-slate-100">
-                         {filteredChannelStats.map((channel) => (
-                            <tr key={channel.id} className="hover:bg-slate-50 transition-colors group">
-                               <td className="px-8 py-5 flex items-center gap-3">
-                                  <div className="p-2 bg-slate-100 rounded-lg group-hover:bg-white group-hover:shadow-sm transition-all">{channel.icon}</div>
-                                  <span className="text-xs font-bold text-navy">{channel.name}</span>
-                               </td>
-                               <td className="px-8 py-5 text-right text-xs font-medium text-slate-600">R$ {channel.spend.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</td>
-                               <td className="px-8 py-5 text-right text-xs font-bold text-navy">{channel.leads}</td>
-                               <td className="px-8 py-5 text-right text-xs font-bold text-indigo-600">R$ {channel.cpl.toFixed(2)}</td>
-                            </tr>
-                         ))}
-                      </tbody>
-                   </table>
-                </div>
-              </div>
             </div>
 
             <div className="space-y-6">
                <div className="bg-white p-8 rounded-[40px] border border-slate-200 shadow-sm">
-                  <h3 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-6">MÉTRICAS SECUNDÁRIAS</h3>
+                  <h3 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-6">MÉTRICAS GERAIS</h3>
                   <div className="space-y-6">
                      <div className="flex items-center justify-between">
                         <div className="flex items-center gap-3">
@@ -352,58 +279,29 @@ const Marketing: React.FC = () => {
                
                {/* Diagnóstico IA */}
                <div className="bg-navy p-8 rounded-[40px] text-white shadow-2xl relative overflow-hidden group border border-white/5">
-                  <div className="absolute top-0 right-0 p-8 opacity-5 group-hover:opacity-10 transition-opacity"><Bot size={70} /></div>
+                  <div className="absolute top-0 right-0 p-8 opacity-5 group-hover:opacity-10 transition-opacity"><Bot size={80} /></div>
                   <div className="flex gap-4 items-start relative z-10">
-                     <div className="p-3 bg-blue-500/10 text-blue-400 rounded-2xl border border-blue-500/10"><Bot size={22} /></div>
+                     <div className="p-3 bg-blue-500/20 text-blue-400 rounded-2xl border border-blue-500/20 shadow-xl shadow-blue-500/10">
+                        <Bot size={24} />
+                     </div>
                      <div className="flex-1">
-                        <h4 className="text-[9px] font-bold text-blue-400 uppercase tracking-widest mb-2 flex items-center gap-2">DIAGNÓSTICO IA</h4>
-                        <p className="text-sm font-light leading-relaxed italic opacity-90 text-slate-300">
-                           {campaigns.length > 0 
-                             ? "Analisando seus dados reais: Uma das campanhas apresenta custo por lead acima da média. Considere pausá-la e realocar o orçamento."
-                             : "Conecte suas contas para receber diagnósticos personalizados."}
+                        <h4 className="text-[10px] font-black text-blue-400 uppercase tracking-widest mb-2 flex items-center gap-2">COPILOT INSIGHT</h4>
+                        <p className="text-sm font-medium leading-relaxed italic opacity-90 text-slate-300">
+                           {metrics.marketing.roi > 0 
+                             ? `"Seu ROI atual é de ${metrics.financeiro.roi.toFixed(0)}%. O custo por lead de R$ ${metrics.marketing.cpl.toFixed(2)} está saudável."`
+                             : `"Ainda não temos dados suficientes de retorno sobre investimento. Continue alimentando o financeiro."`
+                           }
                         </p>
                      </div>
                   </div>
                </div>
             </div>
           </div>
-          )}
-          
-          {campaigns.length > 0 && (
-          <div className="bg-white rounded-[40px] border border-slate-200 shadow-sm overflow-hidden animate-in fade-in duration-700">
-             <div className="px-10 py-8 border-b border-slate-100 flex justify-between items-center bg-slate-50/50">
-                 <h3 className="font-black text-navy uppercase text-xs tracking-[0.2em]">Detalhamento de Campanhas</h3>
-                 <button className="text-slate-400 hover:text-navy transition-colors"><Filter size={16} /></button>
-             </div>
-             <div className="overflow-x-auto">
-                 <table className="w-full text-left">
-                     <thead className="bg-slate-50/50 border-b border-slate-100">
-                         <tr>
-                             <th className="px-6 py-4 text-[9px] font-black text-slate-400 uppercase tracking-widest">Campanha</th>
-                             <th className="px-6 py-4 text-[9px] font-black text-slate-400 uppercase tracking-widest text-center">Plataforma</th>
-                             <th className="px-6 py-4 text-[9px] font-black text-slate-400 uppercase tracking-widest text-right">Inv.</th>
-                             <th className="px-6 py-4 text-[9px] font-black text-slate-400 uppercase tracking-widest text-right">Leads</th>
-                             <th className="px-6 py-4 text-[9px] font-black text-slate-400 uppercase tracking-widest text-right">CPL</th>
-                         </tr>
-                     </thead>
-                     <tbody className="divide-y divide-slate-100">
-                         {activeCampaigns.map((camp, i) => {
-                             const leadCount = camp.leads || camp.conversions || 0;
-                             const cpl = leadCount > 0 ? camp.spend / leadCount : 0;
-                             return (
-                                 <tr key={i} className="hover:bg-slate-50 transition-colors group">
-                                     <td className="px-6 py-4"><p className="text-xs font-bold text-navy truncate max-w-[150px]">{camp.name}</p></td>
-                                     <td className="px-6 py-4 text-center">{camp.platform === 'meta' ? <Instagram size={14} className="mx-auto text-pink-600" /> : <GoogleIcon size={14} />}</td>
-                                     <td className="px-6 py-4 text-right text-xs font-bold text-navy">R$ {camp.spend.toLocaleString()}</td>
-                                     <td className="px-6 py-4 text-right text-xs font-bold text-navy">{leadCount}</td>
-                                     <td className="px-6 py-4 text-right text-xs font-bold text-emerald-600">R$ {cpl.toFixed(2)}</td>
-                                 </tr>
-                             )
-                         })}
-                     </tbody>
-                 </table>
-             </div>
-          </div>
+          ) : (
+            <div className="text-center py-24 text-slate-300">
+               <Filter size={48} className="mx-auto mb-4 opacity-50" />
+               <p className="text-sm font-bold uppercase tracking-widest">Nenhuma campanha encontrada</p>
+            </div>
           )}
         </>
       )}

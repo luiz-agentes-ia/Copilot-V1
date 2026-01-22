@@ -38,7 +38,8 @@ export const getMetaCampaigns = async (accountId: string, token: string) => {
 };
 
 export const getCampaignInsights = async (campaignId: string, token: string, range?: { start: string, end: string }) => {
-  let url = `${GRAPH_URL}/${campaignId}/insights?fields=spend,clicks,impressions,actions&access_token=${token}`;
+  // Adiciona CPC e CTR aos campos solicitados
+  let url = `${GRAPH_URL}/${campaignId}/insights?fields=spend,clicks,impressions,actions,cpc,ctr&access_token=${token}`;
   
   // Aplica filtro de data se fornecido
   if (range) {
@@ -52,7 +53,7 @@ export const getCampaignInsights = async (campaignId: string, token: string, ran
     const response = await fetch(url);
     if (!response.ok) {
         // Se falhar o insight específico, retorna zerado para não quebrar o map
-        return { spend: 0, clicks: 0, impressions: 0, conversions: 0 };
+        return { spend: 0, clicks: 0, impressions: 0, conversions: 0, cpc: 0, ctr: 0 };
     }
 
     const data = await response.json();
@@ -74,11 +75,13 @@ export const getCampaignInsights = async (campaignId: string, token: string, ran
       spend: parseFloat(insights.spend || '0'),
       clicks: parseInt(insights.clicks || '0'),
       impressions: parseInt(insights.impressions || '0'),
-      conversions: conversions
+      conversions: conversions,
+      cpc: parseFloat(insights.cpc || '0'),
+      ctr: parseFloat(insights.ctr || '0')
     };
 
   } catch (error) {
     console.warn(`Erro ao buscar insights da campanha ${campaignId}:`, error);
-    return { spend: 0, clicks: 0, impressions: 0, conversions: 0 };
+    return { spend: 0, clicks: 0, impressions: 0, conversions: 0, cpc: 0, ctr: 0 };
   }
 };

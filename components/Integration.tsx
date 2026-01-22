@@ -1,9 +1,7 @@
+
 import React, { useState, useEffect } from 'react';
 import { 
   Instagram, 
-  MessageCircle, 
-  FileSpreadsheet, 
-  Database, 
   CheckCircle2, 
   Calendar, 
   Zap, 
@@ -12,13 +10,19 @@ import {
   Copy,
   Terminal,
   Globe,
-  Key,
-  AlertOctagon
+  Database,
+  AlertOctagon,
+  ExternalLink,
+  HelpCircle,
+  FileSpreadsheet,
+  MessageCircle,
+  Network
 } from 'lucide-react';
 import { useApp } from '../App';
 import { getMetaAdAccounts, getMetaCampaigns } from '../services/metaService';
 import { signInWithGoogleAds, getAccessibleCustomers } from '../services/googleAdsService';
 import { signInWithGoogleCalendar } from '../services/googleCalendarService';
+import { signInWithGoogleSheets } from '../services/googleSheetsService';
 import { MetaAdAccount, MetaCampaign, GoogleAdAccount } from '../types';
 import { supabase } from '../lib/supabase';
 
@@ -32,56 +36,68 @@ const GoogleIcon = ({ size = 20 }: { size?: number }) => (
 );
 
 const Integration: React.FC = () => {
-  const { integrations, toggleIntegration, metaToken, selectedMetaCampaigns, setSelectedMetaCampaigns, setMetaToken, googleCalendarToken, googleAdsToken, setGoogleAdsToken } = useApp();
+  const { integrations, metaToken, setMetaToken, googleCalendarToken, googleAdsToken, setGoogleAdsToken, setGoogleCalendarToken, googleSheetsToken, setGoogleSheetsToken } = useApp();
   const [loading, setLoading] = useState<string | null>(null);
   const [copied, setCopied] = useState<string | null>(null);
+  const [activeGuideTab, setActiveGuideTab] = useState<'google' | 'meta' | 'supabase'>('google');
   
-  // URL da Origem (Domínio raiz, para Google Console)
+  // Variáveis de Ambiente e URLs
   const currentOrigin = window.location.origin; 
-  // URL Completa (Incluindo pasta, para Supabase Allow List e Redirect)
   const currentRedirectUrl = (window.location.origin + window.location.pathname).replace(/\/$/, "");
-
-  // Pegar URL do projeto Supabase a partir das variaveis de ambiente ou usar fallback visual
-  const supabaseUrlEnv = (import.meta as any).env?.VITE_SUPABASE_URL || 'https://seu-projeto.supabase.co';
-  const supabaseProjectUrl = supabaseUrlEnv; 
+  const supabaseProjectUrl = (import.meta as any).env?.VITE_SUPABASE_URL || 'https://seu-projeto.supabase.co';
   const supabaseCallbackUrl = `${supabaseProjectUrl}/auth/v1/callback`;
 
-  // States Meta
+  // States Meta & Google
   const [metaAdAccounts, setMetaAdAccounts] = useState<MetaAdAccount[]>([]);
   const [metaCampaigns, setMetaCampaigns] = useState<MetaCampaign[]>([]);
   const [selectedMetaAccountId, setSelectedMetaAccountId] = useState<string>(localStorage.getItem('selected_meta_account_id') || '');
-  
-  // States Google
   const [googleAccounts, setGoogleAccounts] = useState<GoogleAdAccount[]>([]);
   const [selectedGoogleAccountId, setSelectedGoogleAccountId] = useState<string>(localStorage.getItem('selected_google_account_id') || '');
 
-  // DEVELOPER TOKEN: 
   const DEV_TOKEN = (import.meta as any)?.env?.VITE_GOOGLE_ADS_DEV_TOKEN || 'SEU_DEVELOPER_TOKEN_AQUI';
 
-  // --- GOOGLE HANDLERS ---
+  // --- EFEITOS E HANDLERS (Mantidos da versão anterior) ---
   useEffect(() => {
-    // Se tiver token do Google Ads globalmente, busca as contas
     if (googleAdsToken && googleAccounts.length === 0) {
       setLoading('google-ads');
-      // Pequeno delay para UX e para garantir que o token está pronto
       setTimeout(() => {
         getAccessibleCustomers(googleAdsToken, DEV_TOKEN)
           .then(accounts => {
             setGoogleAccounts(accounts);
-            // Se tiver contas e nenhuma selecionada, seleciona a primeira automaticamente
             if (accounts.length > 0 && !selectedGoogleAccountId) {
                 handleSelectGoogleAccount(accounts[0].id);
             }
             setLoading(null);
           })
           .catch(err => {
-            console.error("Erro ao buscar contas Google:", err);
-            // Mesmo com erro, tiramos o loading para não travar a UI
+            console.error("Erro Google:", err);
             setLoading(null);
           });
       }, 1000);
     }
   }, [googleAdsToken]);
+
+  useEffect(() => {
+    if (metaToken) {
+      setLoading('meta-ads');
+      getMetaAdAccounts(metaToken)
+        .then(accounts => {
+          setMetaAdAccounts(accounts);
+          if (selectedMetaAccountId) {
+            getMetaCampaigns(selectedMetaAccountId, metaToken).then(camps => setMetaCampaigns(camps));
+          }
+          setLoading(null);
+        })
+        .catch((e) => {
+          console.error(e);
+          setLoading(null);
+          if (e.message && e.message.includes('Session does not match')) {
+            setMetaToken(null);
+            localStorage.removeItem('meta_token');
+          }
+        });
+    }
+  }, [metaToken]);
 
   const handleGoogleLogin = async () => {
     setLoading('google-ads');
@@ -98,32 +114,6 @@ const Integration: React.FC = () => {
     localStorage.setItem('selected_google_account_id', id);
   };
 
-  const handleCalendarLogin = async () => {
-    setLoading('calendar');
-    try {
-      await signInWithGoogleCalendar();
-    } catch (error: any) {
-      alert("Erro ao conectar Google Calendar: " + error.message);
-      setLoading(null);
-    }
-  }
-
-  const handleGoogleDemoMode = async () => {
-    setLoading('google-ads');
-    await new Promise(resolve => setTimeout(resolve, 1500));
-    setGoogleAdsToken('demo_token_bypass');
-    localStorage.setItem('google_ads_demo_mode', 'true');
-    // Aqui usamos explicitamente mock data APENAS para o botão "Demo Mode"
-    // Isso é seguro porque o usuário pediu explicitamente.
-    const demoAccounts = [
-      { id: '123', name: 'customers/123', descriptiveName: 'Conta Demo 1', currencyCode: 'BRL', timeZone: 'BRT' },
-      { id: '456', name: 'customers/456', descriptiveName: 'Conta Demo 2', currencyCode: 'BRL', timeZone: 'BRT' }
-    ];
-    setGoogleAccounts(demoAccounts);
-    if (!selectedGoogleAccountId) handleSelectGoogleAccount('123');
-    setLoading(null);
-  };
-
   const handleGoogleLogout = async () => {
     await supabase.auth.signOut();
     localStorage.removeItem('google_ads_demo_mode');
@@ -135,39 +125,41 @@ const Integration: React.FC = () => {
     window.location.reload();
   };
 
-  // --- META LOGIC ---
-  useEffect(() => {
-    if (metaToken) {
-      setLoading('meta-ads');
-      getMetaAdAccounts(metaToken)
-        .then(accounts => {
-          setMetaAdAccounts(accounts);
-          
-          // Se já tinha uma conta selecionada, carrega as campanhas dela
-          if (selectedMetaAccountId) {
-            getMetaCampaigns(selectedMetaAccountId, metaToken).then(camps => setMetaCampaigns(camps));
-          }
-          
-          setLoading(null);
-        })
-        .catch((e) => {
-          console.error(e);
-          setLoading(null);
-          // Se o token for inválido, desconecta
-          if (e.message && e.message.includes('Session does not match')) {
-            setMetaToken(null);
-            localStorage.removeItem('meta_token');
-          }
-        });
+  const handleCalendarLogin = async () => {
+    setLoading('calendar');
+    try {
+      await signInWithGoogleCalendar();
+    } catch (error: any) {
+      alert("Erro ao conectar Google Calendar: " + error.message);
+      setLoading(null);
     }
-  }, [metaToken]);
+  }
+
+  const handleCalendarLogout = () => {
+    localStorage.removeItem('google_calendar_token');
+    setGoogleCalendarToken(null);
+    window.location.reload();
+  }
+
+  const handleSheetsLogin = async () => {
+    setLoading('sheets');
+    try {
+        await signInWithGoogleSheets();
+    } catch (error: any) {
+        alert("Erro ao conectar Google Sheets: " + error.message);
+        setLoading(null);
+    }
+  }
+
+  const handleSheetsLogout = () => {
+      localStorage.removeItem('google_sheets_token');
+      setGoogleSheetsToken(null);
+      window.location.reload();
+  }
 
   const handleMetaLogin = () => {
     const clientId = '1251859617003520'; 
-    // Garante que o redirect volte para a página atual (mesmo em subpasta)
-    // IMPORTANTE: Essa URL deve estar autorizada no "Login do Facebook" > "Configurações" no painel de developers
-    const redirectUri = (window.location.origin + window.location.pathname).replace(/\/$/, ""); 
-    
+    const redirectUri = currentRedirectUrl; 
     const scope = 'ads_read,ads_management,business_management';
     const authUrl = `https://www.facebook.com/v19.0/dialog/oauth?client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}&scope=${scope}&response_type=token`;
     window.location.href = authUrl;
@@ -193,15 +185,7 @@ const Integration: React.FC = () => {
     setTimeout(() => setCopied(null), 2000);
   };
 
-  const integrationList = [
-    { id: 'google-ads', name: 'Google Ads', icon: <GoogleIcon size={24} />, connected: !!googleAdsToken },
-    { id: 'meta-ads', name: 'Meta Ads', icon: <Instagram className="text-pink-600" />, connected: !!metaToken },
-    { id: 'wpp', name: 'WhatsApp Business', icon: <MessageCircle className="text-emerald-500" />, connected: integrations['wpp'] },
-    { id: 'calendar', name: 'Google Calendar', icon: <Calendar className="text-amber-500" />, connected: !!googleCalendarToken },
-    { id: 'sheets', name: 'Google Sheets', icon: <FileSpreadsheet className="text-emerald-600" />, connected: integrations['sheets'] },
-    { id: 'crm', name: 'CRM (Doctoralia)', icon: <Database className="text-indigo-500" />, connected: integrations['crm'] },
-  ];
-
+  // --- Render Helpers ---
   const renderGoogleAdsCard = () => (
     <div className="mt-4 space-y-3 animate-in fade-in">
       <div className={`p-3 rounded-xl border ${googleAccounts.length === 0 && !loading ? 'bg-rose-50 border-rose-100' : 'bg-blue-50/50 border-blue-100'}`}>
@@ -231,13 +215,13 @@ const Integration: React.FC = () => {
                <AlertOctagon size={16} className="text-rose-500 shrink-0 mt-0.5" />
                <div>
                   <p className="text-[10px] font-bold text-rose-700 leading-tight">Nenhuma conta encontrada.</p>
-                  <p className="text-[9px] text-rose-500 mt-1 leading-tight">A API do Google bloqueia acessos diretos do navegador (CORS) ou a conta não possui permissões.</p>
+                  <p className="text-[9px] text-rose-500 mt-1 leading-tight">Verifique se você configurou o "Developer Token" e se a conta tem permissão API.</p>
                </div>
             </div>
           )}
       </div>
       <button onClick={handleGoogleLogout} className="w-full py-2 flex items-center justify-center gap-2 text-[10px] font-black uppercase text-rose-400 hover:text-rose-600 hover:bg-rose-50 rounded-xl transition-all">
-          <LogOut size={12} /> Desconectar
+          <LogOut size={12} /> Desconectar Google Ads
       </button>
     </div>
   );
@@ -264,149 +248,334 @@ const Integration: React.FC = () => {
   );
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-8 pb-20">
       <header>
         <h2 className="text-2xl font-bold text-navy">Central de Conexões</h2>
-        <p className="text-slate-500 text-sm">Integre suas ferramentas com apenas um clique.</p>
+        <p className="text-slate-500 text-sm">Gerencie o acesso às suas fontes de dados.</p>
       </header>
 
+      {/* CARDS DE CONEXÃO (LADO A LADO) */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-        {integrationList.map((item) => (
-          <div key={item.id} className={`bg-white p-8 rounded-3xl border shadow-sm flex flex-col group transition-all ${item.connected ? 'border-emerald-100 ring-1 ring-emerald-50' : 'border-slate-200 hover:border-navy'}`}>
-            <div className="flex justify-between items-start mb-6">
-              <div className="p-4 bg-slate-50 rounded-2xl group-hover:bg-navy group-hover:text-white transition-colors">{item.icon}</div>
-              {item.connected ? (
-                <span className="flex items-center gap-1.5 text-[10px] font-black text-emerald-600 bg-emerald-50 px-3 py-1.5 rounded-full uppercase border border-emerald-100"><CheckCircle2 size={12} /> Conectado</span>
+        
+        {/* GOOGLE ADS */}
+        <div className={`bg-white p-6 rounded-3xl border shadow-sm flex flex-col group transition-all ${googleAdsToken ? 'border-emerald-100 ring-1 ring-emerald-50' : 'border-slate-200 hover:border-navy'}`}>
+            <div className="flex justify-between items-start mb-4">
+              <div className="p-3 bg-slate-50 rounded-2xl group-hover:bg-navy group-hover:text-white transition-colors"><GoogleIcon size={24} /></div>
+              {googleAdsToken ? (
+                <span className="flex items-center gap-1 text-[9px] font-black text-emerald-600 bg-emerald-50 px-2 py-1 rounded-full uppercase border border-emerald-100"><CheckCircle2 size={10} /> Ativo</span>
               ) : (
-                <span className="text-[10px] font-black text-slate-300 bg-slate-50 px-3 py-1.5 rounded-full uppercase border border-slate-100">Desconectado</span>
+                <span className="text-[9px] font-black text-slate-300 bg-slate-50 px-2 py-1 rounded-full uppercase border border-slate-100">Inativo</span>
               )}
             </div>
-            <h3 className="font-black text-navy text-sm uppercase tracking-widest">{item.name}</h3>
+            <h3 className="font-black text-navy text-sm uppercase tracking-widest">Google Ads</h3>
+            <p className="text-[10px] text-slate-400 mt-1 mb-4 h-8">Conecte sua conta de anúncios para importar métricas de campanhas.</p>
             
-            {/* RENDERIZAÇÃO ESTRITA POR TIPO DE INTEGRAÇÃO */}
-            {item.id === 'google-ads' && item.connected ? (
-                renderGoogleAdsCard()
-            ) : item.id === 'meta-ads' && item.connected ? (
-                renderMetaAdsCard()
-            ) : item.id === 'calendar' && item.connected ? (
-               <div className="mt-4">
-                 <div className="p-3 bg-amber-50 rounded-xl border border-amber-100 text-[10px] text-amber-700 font-bold">
-                    Sincronização Ativa
-                 </div>
-                 <button onClick={() => { localStorage.removeItem('google_calendar_token'); window.location.reload(); }} className="w-full mt-2 py-2 text-[10px] font-black uppercase text-rose-400">Desconectar</button>
-               </div>
-            ) : !item.connected && (
-              <div className="mt-8 space-y-3">
-                <button 
-                  onClick={() => {
-                      if (item.id === 'meta-ads') handleMetaLogin();
-                      else if (item.id === 'google-ads') handleGoogleLogin();
-                      else if (item.id === 'calendar') handleCalendarLogin();
-                      else toggleIntegration(item.id);
-                  }}
-                  disabled={!!loading}
-                  className={`w-full py-4 rounded-2xl font-black text-[10px] uppercase tracking-widest transition-all flex items-center justify-center gap-2 ${loading === item.id ? 'bg-slate-100 text-slate-400' : 'bg-navy text-white hover:bg-slate-800 shadow-lg shadow-navy/20'}`}
-                >
-                  {loading === item.id ? <Loader2 size={14} className="animate-spin" /> : 'Conectar Agora'}
-                </button>
-
-                {item.id === 'google-ads' && (
-                  <button 
-                    onClick={handleGoogleDemoMode}
-                    disabled={!!loading}
-                    className="w-full text-[9px] font-bold text-slate-400 uppercase tracking-widest hover:text-navy hover:underline decoration-dashed underline-offset-4 transition-all"
-                  >
-                    Problemas com login? Usar Modo Demo
-                  </button>
-                )}
-              </div>
+            {googleAdsToken ? renderGoogleAdsCard() : (
+              <button 
+                onClick={handleGoogleLogin}
+                disabled={!!loading}
+                className={`mt-auto w-full py-3 rounded-xl font-black text-[10px] uppercase tracking-widest transition-all flex items-center justify-center gap-2 ${loading === 'google-ads' ? 'bg-slate-100 text-slate-400' : 'bg-navy text-white hover:bg-slate-800 shadow-lg shadow-navy/20'}`}
+              >
+                {loading === 'google-ads' ? <Loader2 size={14} className="animate-spin" /> : 'Conectar Agora'}
+              </button>
             )}
-          </div>
-        ))}
+        </div>
+
+        {/* META ADS */}
+        <div className={`bg-white p-6 rounded-3xl border shadow-sm flex flex-col group transition-all ${metaToken ? 'border-emerald-100 ring-1 ring-emerald-50' : 'border-slate-200 hover:border-navy'}`}>
+            <div className="flex justify-between items-start mb-4">
+              <div className="p-3 bg-slate-50 rounded-2xl group-hover:bg-navy group-hover:text-white transition-colors"><Instagram className="text-pink-600" /></div>
+              {metaToken ? (
+                <span className="flex items-center gap-1 text-[9px] font-black text-emerald-600 bg-emerald-50 px-2 py-1 rounded-full uppercase border border-emerald-100"><CheckCircle2 size={10} /> Ativo</span>
+              ) : (
+                <span className="text-[9px] font-black text-slate-300 bg-slate-50 px-2 py-1 rounded-full uppercase border border-slate-100">Inativo</span>
+              )}
+            </div>
+            <h3 className="font-black text-navy text-sm uppercase tracking-widest">Meta Ads</h3>
+             <p className="text-[10px] text-slate-400 mt-1 mb-4 h-8">Importe campanhas do Facebook e Instagram Ads.</p>
+            
+            {metaToken ? renderMetaAdsCard() : (
+              <button 
+                onClick={handleMetaLogin}
+                disabled={!!loading}
+                className={`mt-auto w-full py-3 rounded-xl font-black text-[10px] uppercase tracking-widest transition-all flex items-center justify-center gap-2 ${loading === 'meta-ads' ? 'bg-slate-100 text-slate-400' : 'bg-navy text-white hover:bg-slate-800 shadow-lg shadow-navy/20'}`}
+              >
+                {loading === 'meta-ads' ? <Loader2 size={14} className="animate-spin" /> : 'Conectar Agora'}
+              </button>
+            )}
+        </div>
+
+        {/* GOOGLE CALENDAR */}
+        <div className={`bg-white p-6 rounded-3xl border shadow-sm flex flex-col group transition-all ${googleCalendarToken ? 'border-emerald-100 ring-1 ring-emerald-50' : 'border-slate-200 hover:border-navy'}`}>
+            <div className="flex justify-between items-start mb-4">
+              <div className="p-3 bg-slate-50 rounded-2xl group-hover:bg-navy group-hover:text-white transition-colors"><Calendar className="text-amber-500" /></div>
+              {googleCalendarToken ? (
+                <span className="flex items-center gap-1 text-[9px] font-black text-emerald-600 bg-emerald-50 px-2 py-1 rounded-full uppercase border border-emerald-100"><CheckCircle2 size={10} /> Ativo</span>
+              ) : (
+                <span className="text-[9px] font-black text-slate-300 bg-slate-50 px-2 py-1 rounded-full uppercase border border-slate-100">Inativo</span>
+              )}
+            </div>
+            <h3 className="font-black text-navy text-sm uppercase tracking-widest">Google Calendar</h3>
+             <p className="text-[10px] text-slate-400 mt-1 mb-4 h-8">Sincronize sua agenda para detectar ocupação e ociosidade.</p>
+            
+            {googleCalendarToken ? (
+               <div className="mt-auto">
+                 <div className="p-2 bg-amber-50 rounded-lg border border-amber-100 text-[10px] text-amber-700 font-bold mb-3 text-center">
+                    Sincronização Automática
+                 </div>
+                 <button onClick={handleCalendarLogout} className="w-full py-2 flex items-center justify-center gap-2 text-[10px] font-black uppercase text-rose-400 hover:text-rose-600 hover:bg-rose-50 rounded-xl transition-all">
+                     <LogOut size={12} /> Desconectar
+                 </button>
+               </div>
+            ) : (
+              <button 
+                onClick={handleCalendarLogin}
+                disabled={!!loading}
+                className={`mt-auto w-full py-3 rounded-xl font-black text-[10px] uppercase tracking-widest transition-all flex items-center justify-center gap-2 ${loading === 'calendar' ? 'bg-slate-100 text-slate-400' : 'bg-navy text-white hover:bg-slate-800 shadow-lg shadow-navy/20'}`}
+              >
+                {loading === 'calendar' ? <Loader2 size={14} className="animate-spin" /> : 'Conectar Agora'}
+              </button>
+            )}
+        </div>
+
+        {/* GOOGLE SHEETS (RESTAURADO) */}
+        <div className={`bg-white p-6 rounded-3xl border shadow-sm flex flex-col group transition-all ${googleSheetsToken ? 'border-emerald-100 ring-1 ring-emerald-50' : 'border-slate-200 hover:border-navy'}`}>
+            <div className="flex justify-between items-start mb-4">
+              <div className="p-3 bg-slate-50 rounded-2xl group-hover:bg-navy group-hover:text-white transition-colors"><FileSpreadsheet className="text-emerald-500" /></div>
+              {googleSheetsToken ? (
+                <span className="flex items-center gap-1 text-[9px] font-black text-emerald-600 bg-emerald-50 px-2 py-1 rounded-full uppercase border border-emerald-100"><CheckCircle2 size={10} /> Ativo</span>
+              ) : (
+                <span className="text-[9px] font-black text-slate-300 bg-slate-50 px-2 py-1 rounded-full uppercase border border-slate-100">Inativo</span>
+              )}
+            </div>
+            <h3 className="font-black text-navy text-sm uppercase tracking-widest">Google Sheets</h3>
+             <p className="text-[10px] text-slate-400 mt-1 mb-4 h-8">Exporte leads e dados financeiros automaticamente para planilhas.</p>
+            
+            {googleSheetsToken ? (
+               <div className="mt-auto">
+                 <div className="p-2 bg-emerald-50 rounded-lg border border-emerald-100 text-[10px] text-emerald-700 font-bold mb-3 text-center">
+                    Permissão de Leitura/Escrita
+                 </div>
+                 <button onClick={handleSheetsLogout} className="w-full py-2 flex items-center justify-center gap-2 text-[10px] font-black uppercase text-rose-400 hover:text-rose-600 hover:bg-rose-50 rounded-xl transition-all">
+                     <LogOut size={12} /> Desconectar
+                 </button>
+               </div>
+            ) : (
+              <button 
+                onClick={handleSheetsLogin}
+                disabled={!!loading}
+                className={`mt-auto w-full py-3 rounded-xl font-black text-[10px] uppercase tracking-widest transition-all flex items-center justify-center gap-2 ${loading === 'sheets' ? 'bg-slate-100 text-slate-400' : 'bg-navy text-white hover:bg-slate-800 shadow-lg shadow-navy/20'}`}
+              >
+                {loading === 'sheets' ? <Loader2 size={14} className="animate-spin" /> : 'Conectar Agora'}
+              </button>
+            )}
+        </div>
+
+        {/* WHATSAPP API (PLACEHOLDER) */}
+        <div className="bg-white p-6 rounded-3xl border border-slate-200 shadow-sm flex flex-col group transition-all hover:border-navy">
+            <div className="flex justify-between items-start mb-4">
+              <div className="p-3 bg-slate-50 rounded-2xl group-hover:bg-navy group-hover:text-white transition-colors"><MessageCircle className="text-emerald-500" /></div>
+              <span className="text-[9px] font-black text-emerald-600 bg-emerald-50 px-2 py-1 rounded-full uppercase border border-emerald-100">Beta</span>
+            </div>
+            <h3 className="font-black text-navy text-sm uppercase tracking-widest">WhatsApp Business</h3>
+             <p className="text-[10px] text-slate-400 mt-1 mb-4 h-8">Automação de atendimento via API Oficial ou QR Code.</p>
+             <button className="mt-auto w-full py-3 rounded-xl font-black text-[10px] uppercase tracking-widest bg-slate-100 text-slate-400 flex items-center justify-center gap-2 cursor-not-allowed">
+                Em Breve
+              </button>
+        </div>
+
+        {/* CRM/WEBHOOKS (PLACEHOLDER) */}
+        <div className="bg-white p-6 rounded-3xl border border-slate-200 shadow-sm flex flex-col group transition-all hover:border-navy">
+            <div className="flex justify-between items-start mb-4">
+              <div className="p-3 bg-slate-50 rounded-2xl group-hover:bg-navy group-hover:text-white transition-colors"><Network className="text-indigo-500" /></div>
+              <span className="text-[9px] font-black text-indigo-600 bg-indigo-50 px-2 py-1 rounded-full uppercase border border-indigo-100">Webhook</span>
+            </div>
+            <h3 className="font-black text-navy text-sm uppercase tracking-widest">CRM & ERP Externo</h3>
+             <p className="text-[10px] text-slate-400 mt-1 mb-4 h-8">Envie leads para RD Station, HubSpot ou Salesforce.</p>
+             <button className="mt-auto w-full py-3 rounded-xl font-black text-[10px] uppercase tracking-widest bg-slate-100 text-slate-400 flex items-center justify-center gap-2 cursor-not-allowed">
+                Em Breve
+              </button>
+        </div>
+
       </div>
       
-      {/* GUIA DE CONFIGURAÇÃO PASSO A PASSO */}
-      <div className="mt-8 p-6 bg-slate-50 border border-slate-200 rounded-2xl animate-in fade-in slide-in-from-bottom-4">
-         <div className="flex items-center gap-3 mb-6">
-            <div className="p-2 bg-navy text-white rounded-lg"><Terminal size={18} /></div>
-            <h4 className="text-sm font-bold text-navy uppercase tracking-wide">Configuração do Ambiente (Google & Supabase)</h4>
-         </div>
-         
-         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+      {/* SEÇÃO DE CONFIGURAÇÃO SEPARADA (Abas) */}
+      <div className="bg-white border border-slate-200 rounded-[32px] overflow-hidden shadow-sm mt-10">
+         <div className="bg-slate-50/50 border-b border-slate-100 p-6">
+            <div className="flex items-center gap-3 mb-4">
+                <div className="p-2 bg-navy text-white rounded-lg"><Terminal size={18} /></div>
+                <h4 className="text-lg font-bold text-navy">Manual de Configuração (Desenvolvedor)</h4>
+            </div>
+            <p className="text-sm text-slate-500 mb-6">Siga estes passos apenas se você for o administrador técnico. É necessário configurar os redirecionamentos em cada plataforma.</p>
             
-            {/* PASSO 1: GOOGLE CLOUD */}
-            <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm relative overflow-hidden">
-               <div className="absolute top-0 right-0 p-2 bg-blue-50 rounded-bl-xl text-blue-600 font-black text-[10px] uppercase">Passo 1</div>
-               <h5 className="text-xs font-black text-navy uppercase mb-4 flex items-center gap-2"><Globe size={14}/> Google Cloud (Origens)</h5>
-               <p className="text-[10px] text-slate-500 mb-4 leading-relaxed">
-                  Em <strong>Credenciais (OAuth 2.0)</strong>, adicione estas URLs para evitar erros de bloqueio (CORS):
-               </p>
+            {/* Abas */}
+            <div className="flex gap-2 border-b border-slate-200">
+                <button 
+                    onClick={() => setActiveGuideTab('google')}
+                    className={`px-6 py-3 text-xs font-bold uppercase tracking-widest border-b-2 transition-all flex items-center gap-2 ${activeGuideTab === 'google' ? 'border-navy text-navy bg-white rounded-t-xl' : 'border-transparent text-slate-400 hover:text-navy hover:bg-slate-100/50 rounded-t-xl'}`}
+                >
+                   <GoogleIcon size={14} /> Google Cloud
+                </button>
+                <button 
+                    onClick={() => setActiveGuideTab('meta')}
+                    className={`px-6 py-3 text-xs font-bold uppercase tracking-widest border-b-2 transition-all flex items-center gap-2 ${activeGuideTab === 'meta' ? 'border-navy text-navy bg-white rounded-t-xl' : 'border-transparent text-slate-400 hover:text-navy hover:bg-slate-100/50 rounded-t-xl'}`}
+                >
+                   <Instagram size={14} /> Meta Developers
+                </button>
+                <button 
+                    onClick={() => setActiveGuideTab('supabase')}
+                    className={`px-6 py-3 text-xs font-bold uppercase tracking-widest border-b-2 transition-all flex items-center gap-2 ${activeGuideTab === 'supabase' ? 'border-navy text-navy bg-white rounded-t-xl' : 'border-transparent text-slate-400 hover:text-navy hover:bg-slate-100/50 rounded-t-xl'}`}
+                >
+                   <Database size={14} /> Supabase
+                </button>
+            </div>
+         </div>
 
-               <div className="space-y-4">
-                  <div>
-                    <label className="text-[9px] font-bold text-slate-400 uppercase block mb-1">Origens JS Autorizadas</label>
-                    <div className="flex gap-2">
-                       <code className="flex-1 bg-slate-50 p-2 rounded text-[10px] font-mono text-navy border border-slate-100 truncate">{currentOrigin}</code>
-                       <button onClick={() => copyToClipboard(currentOrigin, 'origin')} className="p-2 bg-slate-100 hover:bg-slate-200 rounded text-slate-500">
-                          {copied === 'origin' ? <CheckCircle2 size={14} className="text-emerald-500"/> : <Copy size={14}/>}
-                       </button>
+         <div className="p-8 min-h-[300px]">
+            {/* CONTEÚDO GOOGLE */}
+            {activeGuideTab === 'google' && (
+                <div className="animate-in fade-in slide-in-from-bottom-2 duration-300">
+                    <div className="flex justify-between items-start mb-6">
+                        <div>
+                            <h5 className="font-bold text-navy text-sm">Configuração do Google Cloud Console</h5>
+                            <p className="text-xs text-slate-500 mt-1">Necessário para login Google, Google Ads e Google Calendar.</p>
+                        </div>
+                        <a href="https://console.cloud.google.com/apis/dashboard" target="_blank" rel="noreferrer" className="flex items-center gap-1 text-[10px] font-bold text-blue-600 bg-blue-50 px-3 py-1.5 rounded-lg hover:bg-blue-100 transition-colors">
+                            Abrir Console <ExternalLink size={12} />
+                        </a>
                     </div>
-                  </div>
 
-                  <div>
-                    <label className="text-[9px] font-bold text-emerald-600 uppercase block mb-1 flex items-center gap-1"><Zap size={10} fill="currentColor"/> Callback (Redirecionamento)</label>
-                    <div className="flex gap-2">
-                       <code className="flex-1 bg-emerald-50 p-2 rounded text-[10px] font-mono text-emerald-800 border border-emerald-100 truncate font-bold">{supabaseCallbackUrl}</code>
-                       <button onClick={() => copyToClipboard(supabaseCallbackUrl, 'callback')} className="p-2 bg-emerald-100 hover:bg-emerald-200 rounded text-emerald-600">
-                          {copied === 'callback' ? <CheckCircle2 size={14}/> : <Copy size={14}/>}
-                       </button>
+                    {/* AVISO IMPORTANTE: ATIVAR APIS */}
+                    <div className="mb-8 p-4 bg-amber-50 border border-amber-200 rounded-xl flex items-start gap-3">
+                        <AlertOctagon className="text-amber-600 shrink-0 mt-1" size={20} />
+                        <div>
+                           <h6 className="text-xs font-black text-amber-800 uppercase tracking-wide">Ação Obrigatória: Ativar APIs na Biblioteca</h6>
+                           <p className="text-xs text-amber-700 mt-1 leading-relaxed">
+                              Antes de autenticar, você deve acessar o menu <strong>"APIs e serviços" &gt; "Biblioteca"</strong> no Google Cloud e ativar manualmente as seguintes APIs:
+                           </p>
+                           <ul className="list-disc pl-4 mt-2 text-[11px] text-amber-800 font-bold">
+                              <li>Google Ads API</li>
+                              <li>Google Calendar API</li>
+                              <li>Google Sheets API</li>
+                           </ul>
+                        </div>
                     </div>
-                  </div>
-               </div>
-            </div>
 
-            {/* PASSO 2: SUPABASE AUTH */}
-            <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm relative overflow-hidden">
-               <div className="absolute top-0 right-0 p-2 bg-indigo-50 rounded-bl-xl text-indigo-600 font-black text-[10px] uppercase">Passo 2</div>
-               <h5 className="text-xs font-black text-navy uppercase mb-4 flex items-center gap-2"><Database size={14}/> Supabase (URL Config)</h5>
-               <p className="text-[10px] text-slate-500 mb-4 leading-relaxed">
-                  Em <strong>Authentication &gt; URL Configuration</strong>, permita que o Supabase redirecione para cá:
-               </p>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+                        <div className="space-y-4">
+                            <div className="p-4 bg-slate-50 rounded-xl border border-slate-100">
+                                <label className="text-[10px] font-black text-slate-400 uppercase block mb-2">1. Authorized JavaScript Origins</label>
+                                <div className="flex gap-2">
+                                    <code className="flex-1 bg-white p-3 rounded-lg text-xs font-mono text-navy border border-slate-200 truncate">{currentOrigin}</code>
+                                    <button onClick={() => copyToClipboard(currentOrigin, 'origin')} className="p-2 bg-slate-200 rounded-lg text-slate-600 hover:bg-navy hover:text-white transition-colors">{copied === 'origin' ? <CheckCircle2 size={16}/> : <Copy size={16}/>}</button>
+                                </div>
+                                <p className="text-[10px] text-slate-400 mt-2 leading-tight">Adicione esta URL exata no campo "Origens JavaScript autorizadas" do seu Cliente OAuth 2.0.</p>
+                            </div>
+                            
+                            <div className="p-4 bg-emerald-50 rounded-xl border border-emerald-100">
+                                <label className="text-[10px] font-black text-emerald-700 uppercase block mb-2">2. Authorized Redirect URIs</label>
+                                <div className="flex gap-2">
+                                    <code className="flex-1 bg-white p-3 rounded-lg text-xs font-mono text-emerald-800 border border-emerald-200 truncate font-bold">{supabaseCallbackUrl}</code>
+                                    <button onClick={() => copyToClipboard(supabaseCallbackUrl, 'callback')} className="p-2 bg-emerald-200 rounded-lg text-emerald-700 hover:bg-emerald-600 hover:text-white transition-colors">{copied === 'callback' ? <CheckCircle2 size={16}/> : <Copy size={16}/>}</button>
+                                </div>
+                                <p className="text-[10px] text-emerald-600 mt-2 leading-tight">Esta é a URL de callback do Supabase. O Google deve redirecionar para cá após o login.</p>
+                            </div>
+                        </div>
+                        <div className="text-xs text-slate-500 space-y-3 leading-relaxed">
+                            <p><strong>Outros requisitos:</strong></p>
+                            <ul className="list-disc pl-4 space-y-2">
+                                <li>Configure a "Tela de permissão OAuth" (OAuth Consent Screen) como "Externa" para produção ou "Interna" para testes na organização.</li>
+                                <li>Se o app estiver em modo "Testing", você precisa adicionar manualmente os e-mails de teste.</li>
+                                <li>Para o Google Ads funcionar, o "Developer Token" deve ser de nível "Basic" ou "Standard". Tokens de teste funcionam apenas com contas de teste.</li>
+                            </ul>
+                        </div>
+                    </div>
+                </div>
+            )}
 
-               <div>
-                 <label className="text-[9px] font-bold text-slate-400 uppercase block mb-1">Redirect URLs (Allow list)</label>
-                 <div className="flex gap-2">
-                    <code className="flex-1 bg-slate-50 p-2 rounded text-[10px] font-mono text-navy border border-slate-100 truncate">{currentRedirectUrl}</code>
-                    <button onClick={() => copyToClipboard(currentRedirectUrl, 'allowlist')} className="p-2 bg-slate-100 hover:bg-slate-200 rounded text-slate-500">
-                       {copied === 'allowlist' ? <CheckCircle2 size={14} className="text-emerald-500"/> : <Copy size={14}/>}
-                    </button>
-                 </div>
-               </div>
-            </div>
+            {/* CONTEÚDO META */}
+            {activeGuideTab === 'meta' && (
+                <div className="animate-in fade-in slide-in-from-bottom-2 duration-300">
+                    <div className="flex justify-between items-start mb-6">
+                        <div>
+                            <h5 className="font-bold text-navy text-sm">Configuração do Meta for Developers</h5>
+                            <p className="text-xs text-slate-500 mt-1">Necessário para Facebook Login e Marketing API.</p>
+                        </div>
+                        <a href="https://developers.facebook.com/apps" target="_blank" rel="noreferrer" className="flex items-center gap-1 text-[10px] font-bold text-pink-600 bg-pink-50 px-3 py-1.5 rounded-lg hover:bg-pink-100 transition-colors">
+                            Abrir Developers <ExternalLink size={12} />
+                        </a>
+                    </div>
 
-            {/* PASSO 3: CHAVES NO SUPABASE */}
-            <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm relative overflow-hidden ring-1 ring-emerald-500/20">
-               <div className="absolute top-0 right-0 p-2 bg-emerald-500 text-white rounded-bl-xl font-black text-[10px] uppercase">Passo 3</div>
-               <h5 className="text-xs font-black text-navy uppercase mb-4 flex items-center gap-2"><Key size={14}/> Supabase (Providers)</h5>
-               <p className="text-[10px] text-slate-500 mb-4 leading-relaxed">
-                  Em <strong>Authentication &gt; Providers &gt; Google</strong>, cole as chaves geradas no Google Cloud:
-               </p>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+                        <div className="space-y-4">
+                            <div className="p-4 bg-pink-50 rounded-xl border border-pink-100">
+                                <label className="text-[10px] font-black text-pink-700 uppercase block mb-2">Valid OAuth Redirect URIs</label>
+                                <div className="flex gap-2">
+                                    <code className="flex-1 bg-white p-3 rounded-lg text-xs font-mono text-pink-800 border border-pink-200 break-all">{currentRedirectUrl}/</code>
+                                    <button onClick={() => copyToClipboard(currentRedirectUrl + '/', 'meta_redirect')} className="p-2 bg-pink-200 rounded-lg text-pink-700 hover:bg-pink-600 hover:text-white transition-colors flex-shrink-0">{copied === 'meta_redirect' ? <CheckCircle2 size={16}/> : <Copy size={16}/>}</button>
+                                </div>
+                                <p className="text-[10px] text-pink-600 mt-2 leading-tight">
+                                    No painel do Facebook Login &gt; Configurações. <br/>
+                                    <strong>Atenção:</strong> O Facebook exige HTTPS.
+                                </p>
+                            </div>
+                        </div>
+                        <div className="text-xs text-slate-500 space-y-3 leading-relaxed">
+                            <p><strong>Passo a passo no Meta:</strong></p>
+                            <ol className="list-decimal pl-4 space-y-2">
+                                <li>Crie um App do tipo "Business".</li>
+                                <li>Adicione o produto "Facebook Login for Business".</li>
+                                <li>Adicione as permissões: <code>ads_read</code>, <code>ads_management</code>.</li>
+                                <li>Cole a URL ao lado no campo "Valid OAuth Redirect URIs".</li>
+                                <li>Certifique-se que seu usuário é Administrador do App e da Conta de Anúncios.</li>
+                            </ol>
+                        </div>
+                    </div>
+                </div>
+            )}
 
-               <div className="space-y-3">
-                  <div className="p-3 bg-slate-50 rounded-lg border border-dashed border-slate-300 text-center">
-                     <p className="text-[10px] font-bold text-slate-400 uppercase">Client ID</p>
-                     <p className="text-[9px] text-slate-300">(Cole do Google Cloud)</p>
-                  </div>
-                  <div className="p-3 bg-slate-50 rounded-lg border border-dashed border-slate-300 text-center">
-                     <p className="text-[10px] font-bold text-slate-400 uppercase">Client Secret</p>
-                     <p className="text-[9px] text-slate-300">(Cole do Google Cloud)</p>
-                  </div>
-                  <p className="text-[9px] text-emerald-600 font-bold text-center mt-2 flex items-center justify-center gap-1">
-                     <CheckCircle2 size={10}/> Ativar Provider
-                  </p>
-               </div>
-            </div>
+            {/* CONTEÚDO SUPABASE */}
+            {activeGuideTab === 'supabase' && (
+                <div className="animate-in fade-in slide-in-from-bottom-2 duration-300">
+                    <div className="flex justify-between items-start mb-6">
+                        <div>
+                            <h5 className="font-bold text-navy text-sm">Configuração do Supabase Auth</h5>
+                            <p className="text-xs text-slate-500 mt-1">Gerencia a lista de URLs permitidas para redirecionamento.</p>
+                        </div>
+                         <a href="https://supabase.com/dashboard/project/_/auth/url-configuration" target="_blank" rel="noreferrer" className="flex items-center gap-1 text-[10px] font-bold text-emerald-600 bg-emerald-50 px-3 py-1.5 rounded-lg hover:bg-emerald-100 transition-colors">
+                            Abrir Supabase <ExternalLink size={12} />
+                        </a>
+                    </div>
 
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+                        <div className="space-y-4">
+                            <div className="p-4 bg-slate-50 rounded-xl border border-slate-100">
+                                <label className="text-[10px] font-black text-slate-400 uppercase block mb-2">Site URL</label>
+                                <div className="flex gap-2">
+                                    <code className="flex-1 bg-white p-3 rounded-lg text-xs font-mono text-navy border border-slate-200 truncate">{currentOrigin}</code>
+                                    <button onClick={() => copyToClipboard(currentOrigin, 'site_url')} className="p-2 bg-slate-200 rounded-lg text-slate-600 hover:bg-navy hover:text-white transition-colors">{copied === 'site_url' ? <CheckCircle2 size={16}/> : <Copy size={16}/>}</button>
+                                </div>
+                            </div>
+                             <div className="p-4 bg-slate-50 rounded-xl border border-slate-100">
+                                <label className="text-[10px] font-black text-slate-400 uppercase block mb-2">Redirect URLs (Additional)</label>
+                                <div className="flex gap-2">
+                                    <code className="flex-1 bg-white p-3 rounded-lg text-xs font-mono text-navy border border-slate-200 truncate">{currentRedirectUrl}</code>
+                                    <button onClick={() => copyToClipboard(currentRedirectUrl, 'redirect_urls')} className="p-2 bg-slate-200 rounded-lg text-slate-600 hover:bg-navy hover:text-white transition-colors">{copied === 'redirect_urls' ? <CheckCircle2 size={16}/> : <Copy size={16}/>}</button>
+                                </div>
+                                <p className="text-[10px] text-slate-400 mt-2 leading-tight">Adicione todas as URLs onde seu app pode ser acessado (localhost, produção, staging).</p>
+                            </div>
+                        </div>
+                        <div className="text-xs text-slate-500 space-y-3 leading-relaxed">
+                            <p><strong>Configuração de Provedores:</strong></p>
+                            <p>No menu <strong>Authentication &gt; Providers</strong>, você deve ativar o Google e colar o "Client ID" e "Client Secret" gerados no Google Cloud Console.</p>
+                            <div className="bg-amber-50 p-3 rounded-lg border border-amber-100 text-amber-800 text-[11px]">
+                                <HelpCircle size={12} className="inline mr-1 mb-0.5"/>
+                                O Supabase atua como intermediário. O Google redireciona para o Supabase, e o Supabase redireciona de volta para este App.
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            )}
          </div>
       </div>
     </div>

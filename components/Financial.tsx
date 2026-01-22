@@ -48,28 +48,28 @@ const Financial: React.FC = () => {
     });
   }, [financialEntries, dateFilter]);
 
-  // Gráfico de histórico (Simulado com base nos totais)
+  // Gráfico de histórico (Zerado se não houver cálculo real)
   const historyData = useMemo(() => {
     return [
-      { name: 'Jan', revenue: 45000, expenses: 12000, profit: 33000 },
-      { name: 'Fev', revenue: 42000, expenses: 13500, profit: 28500 },
-      { name: 'Mar', revenue: 38000, expenses: 12000, profit: 26000 },
-      { name: 'Abr', revenue: 52000, expenses: 15000, profit: 37000 },
-      { name: 'Mai', revenue: 55000, expenses: 16000, profit: 39000 },
-      { name: 'Jun', revenue: 48000, expenses: 14000, profit: 34000 },
+      { name: 'Jan', revenue: 0, expenses: 0, profit: 0 },
+      { name: 'Fev', revenue: 0, expenses: 0, profit: 0 },
+      { name: 'Mar', revenue: 0, expenses: 0, profit: 0 },
+      { name: 'Abr', revenue: 0, expenses: 0, profit: 0 },
+      { name: 'Mai', revenue: 0, expenses: 0, profit: 0 },
+      { name: 'Jun', revenue: 0, expenses: 0, profit: 0 },
     ];
   }, []);
 
-  // Projeção de fluxo (Simulado)
+  // Projeção de fluxo (Zerado)
   const cashFlowProjection = useMemo(() => {
     return [
-      { name: 'Jan', entrada: 42000, saida: 15000, saldo: 27000, type: 'real' },
-      { name: 'Fev', entrada: 38000, saida: 14000, saldo: 24000, type: 'real' },
-      { name: 'Mar', entrada: 45000, saida: 16000, saldo: 29000, type: 'real' },
-      { name: 'Abr', entrada: 48000, saida: 17500, saldo: 30500, type: 'real' },
-      { name: 'Mai', entrada: 51000, saida: 18000, saldo: 33000, type: 'real' },
-      { name: 'Jun', entrada: 53000, saida: 15000, saldo: 38000, type: 'proj' },
-      { name: 'Jul', entrada: 55000, saida: 16000, saldo: 39000, type: 'proj' },
+      { name: 'Jan', entrada: 0, saida: 0, saldo: 0, type: 'real' },
+      { name: 'Fev', entrada: 0, saida: 0, saldo: 0, type: 'real' },
+      { name: 'Mar', entrada: 0, saida: 0, saldo: 0, type: 'real' },
+      { name: 'Abr', entrada: 0, saida: 0, saldo: 0, type: 'real' },
+      { name: 'Mai', entrada: 0, saida: 0, saldo: 0, type: 'real' },
+      { name: 'Jun', entrada: 0, saida: 0, saldo: 0, type: 'proj' },
+      { name: 'Jul', entrada: 0, saida: 0, saldo: 0, type: 'proj' },
     ];
   }, []);
 
@@ -130,11 +130,11 @@ const Financial: React.FC = () => {
   };
 
   const distributionData = [
-    { name: 'Colaboradores', value: 2500, fill: '#94a3b8' },
-    { name: 'Contas Fixas', value: 2000, fill: '#475569' },
-    { name: 'Impostos', value: 800, fill: '#1e293b' },
-    { name: 'Insumos', value: 120, fill: '#64748b' },
-    { name: 'Marketing', value: 299, fill: '#0f172a' },
+    { name: 'Colaboradores', value: 0, fill: '#94a3b8' },
+    { name: 'Contas Fixas', value: 0, fill: '#475569' },
+    { name: 'Impostos', value: 0, fill: '#1e293b' },
+    { name: 'Insumos', value: 0, fill: '#64748b' },
+    { name: 'Marketing', value: 0, fill: '#0f172a' },
   ];
 
   const StatusBadge = ({ status }: { status: FinancialEntryStatus }) => {
@@ -237,21 +237,11 @@ const Financial: React.FC = () => {
                   <div className="flex items-center justify-between p-4 bg-emerald-50/50 rounded-2xl border border-emerald-100/50">
                     <div>
                       <h4 className="text-xs font-black text-emerald-800">Consulta Particular</h4>
-                      <p className="text-[10px] text-emerald-600 font-bold">Ticket Médio: R$ 450</p>
+                      <p className="text-[10px] text-emerald-600 font-bold">Ticket Médio: R$ 0</p>
                     </div>
                     <div className="text-right">
-                      <p className="text-xs font-black text-emerald-800">ROI: 3.2x</p>
-                      <p className="text-[9px] text-emerald-600 font-bold uppercase tracking-widest">Margem 65%</p>
-                    </div>
-                  </div>
-                  <div className="flex items-center justify-between p-4 bg-amber-50/50 rounded-2xl border border-amber-100/50">
-                    <div>
-                      <h4 className="text-xs font-black text-amber-800">Procedimento Estético X</h4>
-                      <p className="text-[10px] text-amber-600 font-bold">Ticket Médio: R$ 2.400</p>
-                    </div>
-                    <div className="text-right">
-                      <p className="text-xs font-black text-amber-800">ROI: 1.8x</p>
-                      <p className="text-[9px] text-emerald-600 font-bold uppercase tracking-widest">Margem 12% (Baixa!)</p>
+                      <p className="text-xs font-black text-emerald-800">ROI: 0x</p>
+                      <p className="text-[9px] text-emerald-600 font-bold uppercase tracking-widest">Margem 0%</p>
                     </div>
                   </div>
                 </div>
@@ -266,7 +256,7 @@ const Financial: React.FC = () => {
                     <div className="flex-1">
                        <h4 className="text-[10px] font-black text-blue-400 uppercase tracking-widest mb-2 flex items-center gap-2">CONSELHO FINANCEIRO</h4>
                        <p className="text-sm font-medium leading-relaxed italic opacity-90 text-slate-300">
-                          "O Procedimento X está consumindo muitos insumos e marketing para pouca margem líquida. Focar nas consultas particulares este mês pode aumentar seu lucro líquido em 15%."
+                          "Sem dados financeiros suficientes para análise. Adicione lançamentos para gerar insights."
                        </p>
                     </div>
                  </div>
@@ -322,21 +312,12 @@ const Financial: React.FC = () => {
                   <div className="p-3 bg-blue-500 text-white rounded-2xl"><Target size={24} /></div>
                   <div>
                     <h4 className="text-[10px] font-black text-blue-400 uppercase tracking-widest">Capacidade de Gasto</h4>
-                    <p className="text-xl font-black">R$ 15.400 /mês</p>
+                    <p className="text-xl font-black">R$ 0 /mês</p>
                   </div>
                 </div>
                 <p className="text-xs leading-relaxed font-medium text-slate-300 relative z-10">
-                  Baseado no seu caixa atual e na média de recebíveis, você pode aumentar seus gastos fixos em até **R$ 4.200** sem comprometer a reserva de emergência de 3 meses.
+                  Aguardando dados de caixa para cálculo.
                 </p>
-                <div className="mt-6 pt-6 border-t border-white/10 relative z-10">
-                  <div className="flex justify-between text-[10px] font-black uppercase mb-2">
-                    <span>Reserva de Segurança</span>
-                    <span className="text-emerald-400">Protegido</span>
-                  </div>
-                  <div className="w-full bg-white/10 h-2 rounded-full overflow-hidden">
-                    <div className="bg-emerald-500 h-full w-[85%]"></div>
-                  </div>
-                </div>
               </div>
             </div>
           </div>
