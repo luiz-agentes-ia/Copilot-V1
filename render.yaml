@@ -1,0 +1,10 @@
+
+services:
+  - type: static
+    name: copilot-ai-med
+    env: static
+    buildCommand: "npm install && npm run build"
+    staticPublishDir: "dist"
+    envVars:
+      - key: API_KEY
+        sync: false
