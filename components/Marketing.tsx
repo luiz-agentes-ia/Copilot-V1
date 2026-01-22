@@ -287,7 +287,7 @@ const Marketing: React.FC = () => {
                      <div className="flex-1">
                         <h4 className="text-[10px] font-black text-blue-400 uppercase tracking-widest mb-2 flex items-center gap-2">COPILOT INSIGHT</h4>
                         <p className="text-sm font-medium leading-relaxed italic opacity-90 text-slate-300">
-                           {metrics.marketing.roi > 0 
+                           {metrics.financeiro.roi > 0 
                              ? `"Seu ROI atual é de ${metrics.financeiro.roi.toFixed(0)}%. O custo por lead de R$ ${metrics.marketing.cpl.toFixed(2)} está saudável."`
                              : `"Ainda não temos dados suficientes de retorno sobre investimento. Continue alimentando o financeiro."`
                            }

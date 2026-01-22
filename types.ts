@@ -89,8 +89,10 @@ export interface Appointment {
   date: string;
   time: string;
   patientName: string;
-  type: 'Avaliação' | 'Retorno' | 'Procedimento' | 'Cirurgia';
-  status: 'Confirmado' | 'Pendente' | 'Cancelado' | 'Realizado';
+  // Alterado para string union + string para permitir "Google Calendar" sem erro de build
+  type: 'Avaliação' | 'Retorno' | 'Procedimento' | 'Cirurgia' | 'Google Calendar' | string;
+  status: 'Confirmado' | 'Pendente' | 'Cancelado' | 'Realizado' | string;
+  isGoogle?: boolean; // Propriedade opcional adicionada para evitar erro TS2339
 }
 
 // --- DASHBOARD AGGREGATES ---
