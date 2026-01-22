@@ -1,4 +1,3 @@
-
 import React, { useState, createContext, useContext, useEffect, useMemo } from 'react';
 import Sidebar from './components/Sidebar';
 import Dashboard from './components/Dashboard';
@@ -229,25 +228,18 @@ const App: React.FC = () => {
           fetchUserProfile(session.user.id);
           
           // Lógica de recuperação de token do Google
-          // O Supabase retorna o provider_token na sessão após o redirect do OAuth
+          // O Supabase retorna o provider_token na sessão imediatamente após o redirect do OAuth.
+          // Como usamos Supabase Auth APENAS para Google (Meta é manual), podemos assumir que
+          // se existe provider_token, é um token Google válido.
           if (session.provider_token) {
-             const provider = session.user?.app_metadata?.provider;
+             console.log("Novo token Google detectado, salvando...");
+             setGoogleAdsToken(session.provider_token);
+             localStorage.setItem('google_ads_token', session.provider_token);
              
-             // Se for Google, precisamos saber se foi login de Ads ou Calendar, 
-             // mas o Supabase não diferencia fácil. Vamos assumir baseado no estado anterior ou salvar ambos.
-             if (provider === 'google') {
-                // Salva como token de Ads por padrão se estivermos esperando isso
-                // (Na prática, deveria haver uma lógica mais robusta, mas para o MVP funciona)
-                // Se o usuário veio do botão "Conectar Ads", salvamos no Ads.
-                // Como não sabemos de onde ele veio após o refresh, salvamos em ambos se não existirem
-                
-                if (!googleAdsToken) {
-                  setGoogleAdsToken(session.provider_token);
-                  localStorage.setItem('google_ads_token', session.provider_token);
-                }
-                
-                // Se quisermos ser mais específicos, poderíamos salvar no Calendar também se necessário
-                // mas vamos deixar separado por enquanto.
+             // Opcional: Salvar também para Calendar se não existir, já que é o mesmo Google Account
+             if (!localStorage.getItem('google_calendar_token')) {
+                 setGoogleCalendarToken(session.provider_token);
+                 localStorage.setItem('google_calendar_token', session.provider_token);
              }
           }
        } else {
