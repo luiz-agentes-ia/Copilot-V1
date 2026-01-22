@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect } from 'react';
 import { 
   Instagram, 
@@ -8,19 +7,13 @@ import {
   CheckCircle2, 
   Calendar, 
   Zap, 
-  ShieldCheck, 
-  Lock,
   Loader2,
   LogOut,
-  RefreshCw,
-  AlertTriangle,
   Copy,
   Terminal,
-  FileText,
   Globe,
-  Laptop,
-  ArrowRight,
-  Key
+  Key,
+  AlertOctagon
 } from 'lucide-react';
 import { useApp } from '../App';
 import { getMetaAdAccounts, getMetaCampaigns } from '../services/metaService';
@@ -42,8 +35,12 @@ const Integration: React.FC = () => {
   const { integrations, toggleIntegration, metaToken, selectedMetaCampaigns, setSelectedMetaCampaigns, setMetaToken, googleCalendarToken, googleAdsToken, setGoogleAdsToken } = useApp();
   const [loading, setLoading] = useState<string | null>(null);
   const [copied, setCopied] = useState<string | null>(null);
-  const currentUrl = window.location.origin; // URL do AI Studio
   
+  // URL da Origem (Domínio raiz, para Google Console)
+  const currentOrigin = window.location.origin; 
+  // URL Completa (Incluindo pasta, para Supabase Allow List e Redirect)
+  const currentRedirectUrl = (window.location.origin + window.location.pathname).replace(/\/$/, "");
+
   // Pegar URL do projeto Supabase a partir das variaveis de ambiente ou usar fallback visual
   const supabaseUrlEnv = (import.meta as any).env?.VITE_SUPABASE_URL || 'https://seu-projeto.supabase.co';
   const supabaseProjectUrl = supabaseUrlEnv; 
@@ -52,9 +49,11 @@ const Integration: React.FC = () => {
   // States Meta
   const [metaAdAccounts, setMetaAdAccounts] = useState<MetaAdAccount[]>([]);
   const [metaCampaigns, setMetaCampaigns] = useState<MetaCampaign[]>([]);
+  const [selectedMetaAccountId, setSelectedMetaAccountId] = useState<string>(localStorage.getItem('selected_meta_account_id') || '');
   
   // States Google
   const [googleAccounts, setGoogleAccounts] = useState<GoogleAdAccount[]>([]);
+  const [selectedGoogleAccountId, setSelectedGoogleAccountId] = useState<string>(localStorage.getItem('selected_google_account_id') || '');
 
   // DEVELOPER TOKEN: 
   const DEV_TOKEN = (import.meta as any)?.env?.VITE_GOOGLE_ADS_DEV_TOKEN || 'SEU_DEVELOPER_TOKEN_AQUI';
@@ -64,16 +63,20 @@ const Integration: React.FC = () => {
     // Se tiver token do Google Ads globalmente, busca as contas
     if (googleAdsToken && googleAccounts.length === 0) {
       setLoading('google-ads');
-      // Pequeno delay para UX
+      // Pequeno delay para UX e para garantir que o token está pronto
       setTimeout(() => {
         getAccessibleCustomers(googleAdsToken, DEV_TOKEN)
           .then(accounts => {
             setGoogleAccounts(accounts);
+            // Se tiver contas e nenhuma selecionada, seleciona a primeira automaticamente
+            if (accounts.length > 0 && !selectedGoogleAccountId) {
+                handleSelectGoogleAccount(accounts[0].id);
+            }
             setLoading(null);
           })
           .catch(err => {
             console.error("Erro ao buscar contas Google:", err);
-            // Mesmo com erro, tiramos o loading para não travar
+            // Mesmo com erro, tiramos o loading para não travar a UI
             setLoading(null);
           });
       }, 1000);
@@ -88,6 +91,11 @@ const Integration: React.FC = () => {
       alert("Erro ao conectar Google: " + error.message);
       setLoading(null);
     }
+  };
+
+  const handleSelectGoogleAccount = (id: string) => {
+    setSelectedGoogleAccountId(id);
+    localStorage.setItem('selected_google_account_id', id);
   };
 
   const handleCalendarLogin = async () => {
@@ -105,8 +113,14 @@ const Integration: React.FC = () => {
     await new Promise(resolve => setTimeout(resolve, 1500));
     setGoogleAdsToken('demo_token_bypass');
     localStorage.setItem('google_ads_demo_mode', 'true');
-    const accounts = await getAccessibleCustomers('demo', 'demo');
-    setGoogleAccounts(accounts);
+    // Aqui usamos explicitamente mock data APENAS para o botão "Demo Mode"
+    // Isso é seguro porque o usuário pediu explicitamente.
+    const demoAccounts = [
+      { id: '123', name: 'customers/123', descriptiveName: 'Conta Demo 1', currencyCode: 'BRL', timeZone: 'BRT' },
+      { id: '456', name: 'customers/456', descriptiveName: 'Conta Demo 2', currencyCode: 'BRL', timeZone: 'BRT' }
+    ];
+    setGoogleAccounts(demoAccounts);
+    if (!selectedGoogleAccountId) handleSelectGoogleAccount('123');
     setLoading(null);
   };
 
@@ -114,8 +128,10 @@ const Integration: React.FC = () => {
     await supabase.auth.signOut();
     localStorage.removeItem('google_ads_demo_mode');
     localStorage.removeItem('google_ads_token');
+    localStorage.removeItem('selected_google_account_id');
     setGoogleAdsToken(null);
     setGoogleAccounts([]);
+    setSelectedGoogleAccountId('');
     window.location.reload();
   };
 
@@ -126,12 +142,19 @@ const Integration: React.FC = () => {
       getMetaAdAccounts(metaToken)
         .then(accounts => {
           setMetaAdAccounts(accounts);
+          
+          // Se já tinha uma conta selecionada, carrega as campanhas dela
+          if (selectedMetaAccountId) {
+            getMetaCampaigns(selectedMetaAccountId, metaToken).then(camps => setMetaCampaigns(camps));
+          }
+          
           setLoading(null);
         })
         .catch((e) => {
           console.error(e);
           setLoading(null);
-          if (e.message.includes('Session does not match')) {
+          // Se o token for inválido, desconecta
+          if (e.message && e.message.includes('Session does not match')) {
             setMetaToken(null);
             localStorage.removeItem('meta_token');
           }
@@ -141,7 +164,10 @@ const Integration: React.FC = () => {
 
   const handleMetaLogin = () => {
     const clientId = '1251859617003520'; 
-    const redirectUri = window.location.origin + '/'; 
+    // Garante que o redirect volte para a página atual (mesmo em subpasta)
+    // IMPORTANTE: Essa URL deve estar autorizada no "Login do Facebook" > "Configurações" no painel de developers
+    const redirectUri = (window.location.origin + window.location.pathname).replace(/\/$/, ""); 
+    
     const scope = 'ads_read,ads_management,business_management';
     const authUrl = `https://www.facebook.com/v19.0/dialog/oauth?client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}&scope=${scope}&response_type=token`;
     window.location.href = authUrl;
@@ -150,6 +176,7 @@ const Integration: React.FC = () => {
   const handleSelectMetaAccount = async (id: string) => {
     setLoading('meta-ads');
     try {
+      setSelectedMetaAccountId(id);
       localStorage.setItem('selected_meta_account_id', id);
       const camps = await getMetaCampaigns(id, metaToken!);
       setMetaCampaigns(camps);
@@ -177,9 +204,9 @@ const Integration: React.FC = () => {
 
   const renderGoogleAdsCard = () => (
     <div className="mt-4 space-y-3 animate-in fade-in">
-      <div className="p-3 bg-blue-50/50 rounded-xl border border-blue-100">
-          <p className="text-[10px] text-blue-600 font-bold uppercase flex items-center gap-1 mb-2">
-              <Zap size={10} /> Conta Vinculada
+      <div className={`p-3 rounded-xl border ${googleAccounts.length === 0 && !loading ? 'bg-rose-50 border-rose-100' : 'bg-blue-50/50 border-blue-100'}`}>
+          <p className={`text-[10px] font-bold uppercase flex items-center gap-1 mb-2 ${googleAccounts.length === 0 && !loading ? 'text-rose-600' : 'text-blue-600'}`}>
+              <Zap size={10} /> {googleAccounts.length === 0 && !loading ? 'Erro na Conexão' : 'Conta Vinculada'}
           </p>
           {loading === 'google-ads' ? (
              <div className="flex items-center gap-2 text-xs text-blue-800">
@@ -187,15 +214,26 @@ const Integration: React.FC = () => {
              </div>
           ) : googleAccounts.length > 0 ? (
             <div className="space-y-2">
-                <p className="text-xs font-bold text-navy">Contas Encontradas:</p>
-                <select className="w-full p-2 bg-white border border-blue-100 rounded-lg text-xs font-bold text-navy focus:outline-none">
+                <p className="text-xs font-bold text-navy">Selecione a Conta:</p>
+                <select 
+                    value={selectedGoogleAccountId}
+                    onChange={(e) => handleSelectGoogleAccount(e.target.value)}
+                    className="w-full p-2 bg-white border border-blue-100 rounded-lg text-xs font-bold text-navy focus:outline-none"
+                >
+                  <option value="">Selecione...</option>
                   {googleAccounts.map(acc => (
                     <option key={acc.id} value={acc.id}>{acc.descriptiveName}</option>
                   ))}
                 </select>
             </div>
           ) : (
-            <p className="text-[10px] text-slate-500 italic">Conexão estabelecida, buscando contas...</p>
+            <div className="flex items-start gap-2">
+               <AlertOctagon size={16} className="text-rose-500 shrink-0 mt-0.5" />
+               <div>
+                  <p className="text-[10px] font-bold text-rose-700 leading-tight">Nenhuma conta encontrada.</p>
+                  <p className="text-[9px] text-rose-500 mt-1 leading-tight">A API do Google bloqueia acessos diretos do navegador (CORS) ou a conta não possui permissões.</p>
+               </div>
+            </div>
           )}
       </div>
       <button onClick={handleGoogleLogout} className="w-full py-2 flex items-center justify-center gap-2 text-[10px] font-black uppercase text-rose-400 hover:text-rose-600 hover:bg-rose-50 rounded-xl transition-all">
@@ -210,15 +248,16 @@ const Integration: React.FC = () => {
           <p className="text-[10px] text-emerald-600 font-bold uppercase mb-2">Selecione a Conta:</p>
           <select 
             onChange={(e) => handleSelectMetaAccount(e.target.value)}
+            value={selectedMetaAccountId}
             className="w-full p-2 bg-white border border-emerald-100 rounded-lg text-xs font-bold text-navy focus:outline-none"
             disabled={loading === 'meta-ads'}
           >
-            <option value="">Carregando contas...</option>
-            {metaAdAccounts.map(acc => <option key={acc.id} value={acc.id}>{acc.name}</option>)}
+            <option value="">{metaAdAccounts.length === 0 ? 'Buscando...' : 'Selecione...'}</option>
+            {metaAdAccounts.map(acc => <option key={acc.id} value={acc.id}>{acc.name} ({acc.status || 'Ativa'})</option>)}
           </select>
       </div>
       {metaCampaigns.length > 0 && (
-          <p className="text-[9px] text-center text-slate-400 font-bold uppercase mt-2">{metaCampaigns.length} Campanhas Encontradas</p>
+          <p className="text-[9px] text-center text-emerald-600 font-bold uppercase mt-2">{metaCampaigns.length} Campanhas Encontradas</p>
       )}
       <button onClick={() => { setMetaToken(null); localStorage.removeItem('meta_token'); }} className="w-full mt-4 py-3 text-[10px] font-black uppercase text-rose-500 hover:bg-rose-50 rounded-xl transition-all">Desconectar Meta</button>
     </div>
@@ -307,8 +346,8 @@ const Integration: React.FC = () => {
                   <div>
                     <label className="text-[9px] font-bold text-slate-400 uppercase block mb-1">Origens JS Autorizadas</label>
                     <div className="flex gap-2">
-                       <code className="flex-1 bg-slate-50 p-2 rounded text-[10px] font-mono text-navy border border-slate-100 truncate">{currentUrl}</code>
-                       <button onClick={() => copyToClipboard(currentUrl, 'origin')} className="p-2 bg-slate-100 hover:bg-slate-200 rounded text-slate-500">
+                       <code className="flex-1 bg-slate-50 p-2 rounded text-[10px] font-mono text-navy border border-slate-100 truncate">{currentOrigin}</code>
+                       <button onClick={() => copyToClipboard(currentOrigin, 'origin')} className="p-2 bg-slate-100 hover:bg-slate-200 rounded text-slate-500">
                           {copied === 'origin' ? <CheckCircle2 size={14} className="text-emerald-500"/> : <Copy size={14}/>}
                        </button>
                     </div>
@@ -337,8 +376,8 @@ const Integration: React.FC = () => {
                <div>
                  <label className="text-[9px] font-bold text-slate-400 uppercase block mb-1">Redirect URLs (Allow list)</label>
                  <div className="flex gap-2">
-                    <code className="flex-1 bg-slate-50 p-2 rounded text-[10px] font-mono text-navy border border-slate-100 truncate">{currentUrl}/</code>
-                    <button onClick={() => copyToClipboard(currentUrl + '/', 'allowlist')} className="p-2 bg-slate-100 hover:bg-slate-200 rounded text-slate-500">
+                    <code className="flex-1 bg-slate-50 p-2 rounded text-[10px] font-mono text-navy border border-slate-100 truncate">{currentRedirectUrl}</code>
+                    <button onClick={() => copyToClipboard(currentRedirectUrl, 'allowlist')} className="p-2 bg-slate-100 hover:bg-slate-200 rounded text-slate-500">
                        {copied === 'allowlist' ? <CheckCircle2 size={14} className="text-emerald-500"/> : <Copy size={14}/>}
                     </button>
                  </div>

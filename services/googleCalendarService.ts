@@ -1,19 +1,21 @@
-
 import { supabase } from '../lib/supabase';
 
 /**
  * Inicia o fluxo de OAuth para o Google Calendar.
- * O redirectTo usa window.location.origin, que pega a URL do AI Studio automaticamente.
+ * O redirectTo usa window.location.origin + pathname para suportar subdiretórios.
  */
 export const signInWithGoogleCalendar = async () => {
   if (!supabase) return;
+
+  // Garante que o redirecionamento volte para a página/pasta atual
+  const returnUrl = window.location.origin + window.location.pathname;
 
   const { data, error } = await supabase.auth.signInWithOAuth({
     provider: 'google',
     options: {
       // Escopo para ler eventos do calendário
       scopes: 'https://www.googleapis.com/auth/calendar.events.readonly',
-      redirectTo: window.location.origin, // Pega a URL do AI Studio (ex: https://xxx.idx.run)
+      redirectTo: returnUrl, 
       queryParams: {
         access_type: 'offline',
         prompt: 'consent',
