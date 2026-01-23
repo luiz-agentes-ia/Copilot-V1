@@ -1,12 +1,5 @@
 
-// Follow this setup guide to integrate the Deno runtime into your application:
-// https://deno.land/manual/examples/deploy_node_server
-
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2.7.1";
-
-// Declare Deno to avoid TypeScript errors when checking in a non-Deno environment
-declare const Deno: any;
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -14,154 +7,117 @@ const corsHeaders = {
 };
 
 serve(async (req) => {
+  // 1. Handle CORS preflight requests (Browser check)
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders });
   }
 
   try {
-    const { action, code, redirect_uri, client_id, client_secret, developer_token, customer_id, user_id } = await req.json();
+    const { action, access_token, developer_token, customer_id, date_range } = await req.json();
 
-    // Initialize Supabase Client (Service Role for DB writes)
-    const supabaseClient = createClient(
-      // Retrieve from Edge Function Environment Variables
-      Deno.env.get('SUPABASE_URL') ?? '',
-      Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
-    );
+    if (!access_token) throw new Error('Missing access_token');
+    if (!developer_token) throw new Error('Missing developer_token');
 
-    let refresh_token = '';
-    let access_token = '';
+    const API_VERSION = 'v16';
+    const BASE_URL = `https://googleads.googleapis.com/${API_VERSION}`;
 
-    // 1. TROCA DE CÓDIGO POR TOKEN (Se action == 'exchange_and_sync')
-    if (action === 'exchange_and_sync') {
-      const tokenUrl = 'https://oauth2.googleapis.com/token';
-      const tokenParams = new URLSearchParams({
-        code,
-        client_id,
-        client_secret,
-        redirect_uri,
-        grant_type: 'authorization_code',
+    // --- AÇÃO: LISTAR CONTAS (List Accessible Customers) ---
+    if (action === 'list_customers') {
+      const url = `${BASE_URL}/customers:listAccessibleCustomers`;
+      
+      const response = await fetch(url, {
+        method: 'GET',
+        headers: {
+          'Authorization': `Bearer ${access_token}`,
+          'developer-token': developer_token,
+          'Content-Type': 'application/json',
+        }
       });
 
-      const tokenRes = await fetch(tokenUrl, {
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error("Google API Error (List):", errorText);
+        throw new Error(`Google Ads API Error: ${response.statusText}`);
+      }
+
+      const data = await response.json();
+      
+      // A API retorna resourceNames como "customers/1234567890"
+      // Vamos formatar para o frontend
+      const customers = (data.resourceNames || []).map((resourceName: string) => {
+        const id = resourceName.replace('customers/', '');
+        return {
+          id: id,
+          name: resourceName,
+          descriptiveName: `Conta ${id}`, // A endpoint listAccessibleCustomers infelizmente não retorna o nome legível da conta
+          currencyCode: 'BRL',
+          timeZone: 'America/Sao_Paulo'
+        };
+      });
+
+      return new Response(JSON.stringify({ customers }), {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
+    }
+
+    // --- AÇÃO: BUSCAR CAMPANHAS (Search Stream / GAQL) ---
+    if (action === 'get_campaigns') {
+      if (!customer_id) throw new Error('Missing customer_id');
+
+      const cleanCustomerId = customer_id.replace(/-/g, '');
+      const url = `${BASE_URL}/customers/${cleanCustomerId}/googleAds:search`;
+
+      // Query GAQL para buscar métricas
+      let query = `
+        SELECT 
+          campaign.id, 
+          campaign.name, 
+          campaign.status, 
+          metrics.clicks, 
+          metrics.impressions, 
+          metrics.cost_micros, 
+          metrics.conversions 
+        FROM campaign 
+        WHERE campaign.status != 'REMOVED' 
+      `;
+
+      if (date_range && date_range.start && date_range.end) {
+        query += ` AND segments.date BETWEEN '${date_range.start}' AND '${date_range.end}'`;
+      } else {
+        query += ` AND segments.date DURING LAST_30_DAYS`;
+      }
+      
+      // Adicionando um limite de segurança
+      query += ` LIMIT 50`;
+
+      const response = await fetch(url, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: tokenParams.toString(),
+        headers: {
+          'Authorization': `Bearer ${access_token}`,
+          'developer-token': developer_token,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ query })
       });
 
-      const tokenData = await tokenRes.json();
-      if (tokenData.error) throw new Error(`Google Auth Error: ${tokenData.error_description || tokenData.error}`);
+      if (!response.ok) {
+        const errorText = await response.text();
+        // Tratamento para erro comum de permissão ou conta incorreta
+        if (errorText.includes("CUSTOMER_NOT_FOUND") || errorText.includes("NOT_ADS_USER")) {
+           throw new Error("Conta não encontrada ou usuário sem permissão de acesso.");
+        }
+        throw new Error(`Google API Query Error: ${errorText}`);
+      }
 
-      refresh_token = tokenData.refresh_token;
-      access_token = tokenData.access_token;
-
-      // Salvar Tokens no DB (Tabela ad_integrations)
-      // Nota: Em produção, encryptar o refresh_token!
-      await supabaseClient.from('ad_integrations').upsert({
-        user_id,
-        provider: 'google',
-        ad_account_id: customer_id,
-        // Armazenando tokens temporariamente (Refresh é o importante)
-        // access_token: access_token, // Opcional, expira rápido
-        // refresh_token: refresh_token // CRÍTICO
-      }, { onConflict: 'user_id, provider' });
-    } 
-    // 2. USO DE TOKEN EXISTENTE (Se action == 'sync_only')
-    else if (action === 'sync_only') {
-       // Buscar refresh token do banco (ou assumir que foi passado, mas melhor buscar do banco para segurança)
-       // Simplificação: vamos regenerar o access token usando refresh token se tivessemos salvo
-       // Por limitação deste exemplo, vamos assumir que o fluxo 'exchange' acabou de rodar ou implementar logica de refresh
-       throw new Error("Para 'sync_only', implementação de busca de refresh token no DB necessária.");
+      const data = await response.json();
+      
+      // O endpoint search retorna { results: [...] }
+      return new Response(JSON.stringify({ results: data.results || [] }), {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
     }
 
-    // 3. BUSCAR CAMPANHAS (Google Ads API)
-    // Endpoint para buscar campanhas usando GAQL (Google Ads Query Language)
-    // Remove hífens do Customer ID
-    const cleanCustomerId = customer_id.replace(/-/g, '');
-    const query = `
-      SELECT 
-        campaign.id, 
-        campaign.name, 
-        campaign.status, 
-        campaign.advertising_channel_type,
-        metrics.clicks,
-        metrics.impressions,
-        metrics.cost_micros,
-        metrics.conversions
-      FROM campaign 
-      WHERE campaign.status != 'REMOVED'
-      LIMIT 50
-    `;
-
-    const searchUrl = `https://googleads.googleapis.com/v16/customers/${cleanCustomerId}/googleAds:search`;
-    
-    const adsRes = await fetch(searchUrl, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${access_token}`,
-        'developer-token': developer_token,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({ query })
-    });
-
-    const adsData = await adsRes.json();
-    
-    if (adsData.error) {
-       // Se erro for de token expirado, precisaria usar refresh_token para pegar novo access_token aqui
-       throw new Error(`Google Ads API Error: ${adsData.error.message}`);
-    }
-
-    // 4. SALVAR DADOS NO SUPABASE
-    const results = adsData.results || [];
-    const savedCampaigns = [];
-
-    // Pegar ID da integração
-    const { data: integration } = await supabaseClient
-       .from('ad_integrations')
-       .select('id')
-       .eq('user_id', user_id)
-       .eq('provider', 'google')
-       .single();
-
-    if (integration) {
-       for (const row of results) {
-          const camp = row.campaign;
-          const metrics = row.metrics;
-          
-          // Upsert Campanha
-          const { data: savedCamp } = await supabaseClient
-             .from('ad_campaigns')
-             .upsert({
-                integration_id: integration.id,
-                user_id,
-                external_id: camp.id,
-                name: camp.name,
-                platform: 'google',
-                status: camp.status,
-                budget: 0 // Simplificado
-             }, { onConflict: 'integration_id, external_id' })
-             .select()
-             .single();
-          
-          if (savedCamp) {
-             savedCampaigns.push(savedCamp);
-             // Insert Métricas (Hoje)
-             await supabaseClient.from('ad_metrics').insert({
-                campaign_id: savedCamp.id,
-                date: new Date().toISOString().split('T')[0],
-                impressions: parseInt(metrics.impressions),
-                clicks: parseInt(metrics.clicks),
-                spend: parseInt(metrics.costMicros) / 1000000, // Micros to Currency
-                conversions: parseFloat(metrics.conversions),
-                // Calcular CTR/CPC na query ou no front
-             });
-          }
-       }
-    }
-
-    return new Response(JSON.stringify({ success: true, count: savedCampaigns.length }), {
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-    });
+    throw new Error(`Unknown action: ${action}`);
 
   } catch (error: any) {
     return new Response(JSON.stringify({ error: error.message }), {

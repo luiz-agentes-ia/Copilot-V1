@@ -9,7 +9,6 @@ import {
   ResponsiveContainer, Cell
 } from 'recharts';
 import { useApp } from '../App';
-import { getCampaignInsights, getMetaCampaigns } from '../services/metaService';
 import { getGoogleCampaigns } from '../services/googleAdsService';
 
 const GoogleIcon = ({ size = 16 }: { size?: number }) => (
@@ -22,52 +21,15 @@ const GoogleIcon = ({ size = 16 }: { size?: number }) => (
 );
 
 const Marketing: React.FC = () => {
-  const { dateFilter, setDateFilter, metaToken, googleAdsToken, metrics } = useApp();
+  const { dateFilter, setDateFilter, googleAdsToken, metrics } = useApp();
   const [loading, setLoading] = useState(false);
-  const [platformFilter, setPlatformFilter] = useState<'all' | 'google' | 'meta' | 'offline'>('all');
+  const [platformFilter, setPlatformFilter] = useState<'all' | 'google' | 'offline'>('all');
   
   // States para dados reais
-  const [realMetaCampaigns, setRealMetaCampaigns] = useState<any[]>([]);
   const [realGoogleCampaigns, setRealGoogleCampaigns] = useState<any[]>([]);
 
-  const isConnected = !!metaToken || !!googleAdsToken;
+  const isConnected = !!googleAdsToken;
   const DEV_TOKEN = (import.meta as any)?.env?.VITE_GOOGLE_ADS_DEV_TOKEN || 'SEU_DEVELOPER_TOKEN_AQUI';
-
-  // --- BUSCA DADOS REAIS META ---
-  useEffect(() => {
-    const fetchMetaData = async () => {
-      if (metaToken) {
-        setLoading(true);
-        try {
-          const accountId = localStorage.getItem('selected_meta_account_id');
-          if (!accountId) { setLoading(false); return; }
-
-          const campaignsData = await getMetaCampaigns(accountId, metaToken);
-          if (campaignsData && campaignsData.length > 0) {
-             const campaignsWithInsights = await Promise.all(campaignsData.map(async (camp: any) => {
-                try {
-                    const insights = await getCampaignInsights(camp.id, metaToken, { start: dateFilter.start, end: dateFilter.end });
-                    return { name: camp.name, platform: 'meta', ...insights };
-                } catch (e) {
-                    return { name: camp.name, platform: 'meta', spend: 0, clicks: 0, impressions: 0, conversions: 0 };
-                }
-             }));
-             setRealMetaCampaigns(campaignsWithInsights);
-          } else {
-             setRealMetaCampaigns([]);
-          }
-        } catch (error) {
-           console.error("Erro Meta:", error);
-           setRealMetaCampaigns([]);
-        } finally {
-           setLoading(false);
-        }
-      } else {
-        setRealMetaCampaigns([]);
-      }
-    };
-    fetchMetaData();
-  }, [metaToken, dateFilter]);
 
   // --- BUSCA DADOS REAIS GOOGLE ---
   useEffect(() => {
@@ -105,8 +67,8 @@ const Marketing: React.FC = () => {
 
   // --- CONSOLIDAÇÃO DE DADOS (API + FINANCEIRO) ---
   const campaigns = useMemo(() => {
-      // Combina campanhas de API
-      const apiCampaigns = [...realGoogleCampaigns, ...realMetaCampaigns];
+      // Combina campanhas de API (Agora somente Google)
+      const apiCampaigns = [...realGoogleCampaigns];
       
       // Calcula quanto foi gasto em APIs
       const apiSpend = apiCampaigns.reduce((sum, c) => sum + (c.spend || 0), 0);
@@ -131,12 +93,12 @@ const Marketing: React.FC = () => {
       }
 
       return apiCampaigns;
-  }, [realMetaCampaigns, realGoogleCampaigns, metrics.marketing.investimento]);
+  }, [realGoogleCampaigns, metrics.marketing.investimento]);
 
 
   // CÁLCULO DE TOTAIS
   const totalSpend = campaigns.reduce((acc, c) => acc + c.spend, 0);
-  const totalLeads = campaigns.reduce((acc, c) => acc + (c.leads || c.conversions || 0), 0) + (metrics.marketing.leads - (realGoogleCampaigns.reduce((a,b)=>a+(b.leads||0),0) + realMetaCampaigns.reduce((a,b)=>a+(b.conversions||0),0))); // Soma leads manuais do CRM se não vierem da API
+  const totalLeads = campaigns.reduce((acc, c) => acc + (c.leads || c.conversions || 0), 0) + (metrics.marketing.leads - (realGoogleCampaigns.reduce((a,b)=>a+(b.leads||0),0))); // Soma leads manuais do CRM se não vierem da API
   const totalImpressions = campaigns.reduce((acc, c) => acc + c.impressions, 0);
   const cpl = totalLeads > 0 ? totalSpend / totalLeads : 0;
   const conversions = Math.round(totalLeads * 0.12);
@@ -151,9 +113,9 @@ const Marketing: React.FC = () => {
         <div>
           <h2 className="text-2xl font-semibold text-navy tracking-tight">Performance de Tráfego Pago</h2>
           <div className="flex items-center gap-2 mt-1">
-            <p className="text-xs text-slate-500 font-light italic">Monitoramento unificado (Google, Meta & Financeiro).</p>
+            <p className="text-xs text-slate-500 font-light italic">Monitoramento unificado (Google Ads & Financeiro).</p>
             {isConnected && (
-               <span className="bg-emerald-50 text-emerald-700 text-[9px] font-bold px-2 py-0.5 rounded uppercase tracking-widest border border-emerald-100 flex items-center gap-1"><Zap size={8} fill="currentColor"/> Dados Reais Conectados</span>
+               <span className="bg-emerald-50 text-emerald-700 text-[9px] font-bold px-2 py-0.5 rounded uppercase tracking-widest border border-emerald-100 flex items-center gap-1"><Zap size={8} fill="currentColor"/> Google Ads Conectado</span>
             )}
           </div>
         </div>
@@ -177,7 +139,7 @@ const Marketing: React.FC = () => {
               <div>
                   <h3 className="text-sm font-bold text-navy">Sem dados de campanha ativos.</h3>
                   <p className="text-xs text-slate-500 mt-1">
-                      Não encontramos gastos nas APIs nem lançamentos de "Marketing" no Financeiro para o período ({dateFilter.label}).
+                      Não encontramos gastos no Google Ads nem lançamentos de "Marketing" no Financeiro para o período ({dateFilter.label}).
                   </p>
               </div>
           </div>
@@ -186,7 +148,7 @@ const Marketing: React.FC = () => {
       {loading ? (
         <div className="h-96 flex flex-col items-center justify-center gap-4 bg-white rounded-[40px] border border-slate-200">
           <Loader2 size={32} className="text-navy animate-spin" />
-          <p className="text-[10px] font-bold text-navy uppercase tracking-widest">Sincronizando dados das APIs e Financeiro...</p>
+          <p className="text-[10px] font-bold text-navy uppercase tracking-widest">Sincronizando Google Ads...</p>
         </div>
       ) : (
         <>
@@ -196,7 +158,6 @@ const Marketing: React.FC = () => {
                 <span className="text-[10px] font-medium text-slate-400 uppercase tracking-widest">Investimento Total</span>
                 <div className="p-2 bg-blue-50 text-blue-600 rounded-lg"><DollarSign size={16} /></div>
               </div>
-              {/* Usa metrics.marketing.investimento diretamente pois ele já consolida tudo no App.tsx */}
               <p className="text-2xl font-bold text-navy tracking-tight">R$ {metrics.marketing.investimento.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</p>
             </div>
 
@@ -205,7 +166,6 @@ const Marketing: React.FC = () => {
                 <span className="text-[10px] font-medium text-slate-400 uppercase tracking-widest">Leads Capturados</span>
                 <div className="p-2 bg-indigo-50 text-indigo-600 rounded-lg"><Users size={16} /></div>
               </div>
-              {/* Usa metrics do App.tsx que conta os leads reais do banco */}
               <p className="text-2xl font-bold text-navy tracking-tight">{metrics.marketing.leads}</p>
             </div>
 
@@ -235,7 +195,7 @@ const Marketing: React.FC = () => {
                 <div className="flex justify-between items-center mb-10">
                   <div>
                     <h3 className="text-[10px] font-bold text-navy uppercase tracking-widest">Investimento por Campanha</h3>
-                    <p className="text-[10px] text-slate-400 font-medium uppercase tracking-widest mt-1">Análise de Performance Individual (API + Manual)</p>
+                    <p className="text-[10px] text-slate-400 font-medium uppercase tracking-widest mt-1">Análise de Performance Individual (Google + Manual)</p>
                   </div>
                 </div>
                 <div className="h-80">
@@ -247,7 +207,7 @@ const Marketing: React.FC = () => {
                       <Tooltip cursor={{ fill: '#f8fafc', radius: 8 }} contentStyle={{ borderRadius: '16px', border: 'none', boxShadow: '0 10px 30px rgba(0,0,0,0.08)' }} />
                       <Bar dataKey="spend" radius={[6, 6, 0, 0]} barSize={40}>
                         {activeCampaigns.map((entry, index) => (
-                          <Cell key={`cell-${index}`} fill={entry.platform === 'google' ? '#4285F4' : entry.platform === 'meta' ? '#E1306C' : '#0f172a'} />
+                          <Cell key={`cell-${index}`} fill={entry.platform === 'google' ? '#4285F4' : '#0f172a'} />
                         ))}
                       </Bar>
                     </RechartsBarChart>

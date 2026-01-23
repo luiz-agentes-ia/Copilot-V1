@@ -34,19 +34,14 @@ interface AppContextType {
   integrations: Record<string, boolean>;
   
   // Tokens Específicos
-  metaToken: string | null;
   googleCalendarToken: string | null;
   googleAdsToken: string | null;
   googleSheetsToken: string | null;
   
-  selectedMetaCampaigns: string[];
-  
   // Setters
-  setMetaToken: (token: string | null) => void;
   setGoogleCalendarToken: (token: string | null) => void;
   setGoogleAdsToken: (token: string | null) => void;
   setGoogleSheetsToken: (token: string | null) => void;
-  setSelectedMetaCampaigns: (campaigns: string[]) => void;
   toggleIntegration: (id: string) => void;
   
   // Data & Metrics
@@ -112,16 +107,12 @@ const App: React.FC = () => {
   const [appointments, setAppointments] = useState<Appointment[]>([]);
   
   // Tokens
-  const [metaToken, setMetaToken] = useState<string | null>(localStorage.getItem('meta_token'));
   const [googleCalendarToken, setGoogleCalendarToken] = useState<string | null>(localStorage.getItem('google_calendar_token'));
   const [googleAdsToken, setGoogleAdsToken] = useState<string | null>(localStorage.getItem('google_ads_token'));
   const [googleSheetsToken, setGoogleSheetsToken] = useState<string | null>(localStorage.getItem('google_sheets_token'));
 
-  const [selectedMetaCampaigns, setSelectedMetaCampaigns] = useState<string[]>(JSON.parse(localStorage.getItem('meta_campaigns') || '[]'));
-  
   const [integrations, setIntegrations] = useState<Record<string, boolean>>({
     'google-ads': !!googleAdsToken, 
-    'meta-ads': !!metaToken, 
     'wpp': true, 
     'sheets': !!googleSheetsToken, 
     'calendar': !!googleCalendarToken, 
@@ -132,25 +123,10 @@ const App: React.FC = () => {
     setIntegrations(prev => ({
       ...prev,
       'google-ads': !!googleAdsToken,
-      'meta-ads': !!metaToken,
       'calendar': !!googleCalendarToken,
       'sheets': !!googleSheetsToken
     }));
-  }, [googleAdsToken, metaToken, googleCalendarToken, googleSheetsToken]);
-
-  // --- OAUTH CALLBACK ---
-  useEffect(() => {
-    const hash = window.location.hash;
-    if (hash && hash.includes('access_token')) {
-      const params = new URLSearchParams(hash.replace('#', '?'));
-      const token = params.get('access_token');
-      if (token) {
-        setMetaToken(token);
-        localStorage.setItem('meta_token', token);
-        window.history.pushState("", document.title, window.location.pathname + window.location.search);
-      }
-    }
-  }, []);
+  }, [googleAdsToken, googleCalendarToken, googleSheetsToken]);
 
   // --- DATA FETCHING FUNCTIONS ---
   const fetchFinancials = useCallback(async () => {
@@ -254,19 +230,26 @@ const App: React.FC = () => {
           const authIntent = localStorage.getItem('auth_intent');
           
           if (session.provider_token) {
+             console.log("Token do provedor (Google) detectado com sucesso!");
+             
              if (authIntent === 'google_ads') {
                 setGoogleAdsToken(session.provider_token);
                 localStorage.setItem('google_ads_token', session.provider_token);
+                localStorage.removeItem('auth_intent'); // Limpa apenas se sucesso
              } 
              else if (authIntent === 'google_calendar') {
                 setGoogleCalendarToken(session.provider_token);
                 localStorage.setItem('google_calendar_token', session.provider_token);
+                localStorage.removeItem('auth_intent');
              }
              else if (authIntent === 'google_sheets') {
                 setGoogleSheetsToken(session.provider_token);
                 localStorage.setItem('google_sheets_token', session.provider_token);
+                localStorage.removeItem('auth_intent');
              }
-             localStorage.removeItem('auth_intent');
+          } else if (authIntent) {
+              console.warn("Auth intent existe (" + authIntent + ") mas provider_token não veio na sessão.");
+              // Mantém o intent para tentar em uma próxima atualização de sessão se ocorrer
           }
        } else {
           setUser(null);
@@ -277,8 +260,15 @@ const App: React.FC = () => {
        setAuthLoading(false);
     };
 
+    // Verifica a sessão atual imediatamente
     supabase.auth.getSession().then(({ data: { session } }) => handleSession(session));
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => handleSession(session));
+    
+    // Ouve mudanças (login, logout, refresh token)
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+        console.log("Auth event:", event);
+        handleSession(session);
+    });
+    
     return () => subscription.unsubscribe();
   }, []);
 
@@ -311,7 +301,6 @@ const App: React.FC = () => {
   const logout = async () => { 
     await supabase!.auth.signOut(); 
     localStorage.clear(); 
-    setMetaToken(null);
     setGoogleAdsToken(null);
     setGoogleCalendarToken(null);
     setGoogleSheetsToken(null);
@@ -323,7 +312,6 @@ const App: React.FC = () => {
   // Financeiro
   const addFinancialEntry = async (entry: FinancialEntry) => {
     if (!user) return;
-    // Otimista: Adiciona na lista local imediatamente
     const tempId = crypto.randomUUID();
     const newEntry = { ...entry, id: tempId };
     setFinancialEntries(prev => [newEntry, ...prev]);
@@ -335,16 +323,13 @@ const App: React.FC = () => {
 
     if (error) {
         console.error("Erro ao adicionar transação:", error);
-        // Rollback
         setFinancialEntries(prev => prev.filter(e => e.id !== tempId));
         alert("Erro ao salvar. Tente novamente.");
     }
   };
 
   const updateFinancialEntry = async (entry: FinancialEntry) => {
-    // Otimista
     setFinancialEntries(prev => prev.map(e => e.id === entry.id ? entry : e));
-
     const { error } = await supabase!.from('transactions').update({
        type: entry.type, category: entry.category, name: entry.name,
        unit_value: entry.unitValue, total: entry.total, status: entry.status, date: entry.date
@@ -352,21 +337,19 @@ const App: React.FC = () => {
 
     if (error) {
        console.error("Erro ao atualizar:", error);
-       fetchFinancials(); // Reverte para o estado do servidor
+       fetchFinancials();
        alert("Erro ao atualizar transação.");
     }
   };
 
   const deleteFinancialEntry = async (id: string) => {
-    // Otimista: Remove da tela imediatamente
     const backup = [...financialEntries];
     setFinancialEntries(prev => prev.filter(e => e.id !== id));
-
     const { error } = await supabase!.from('transactions').delete().eq('id', id);
 
     if (error) {
        console.error("Erro ao deletar:", error);
-       setFinancialEntries(backup); // Restaura se der erro
+       setFinancialEntries(backup);
        alert("Erro ao excluir. O item não foi removido.");
     }
   };
@@ -437,22 +420,16 @@ const App: React.FC = () => {
 
   // --- CONSOLIDATED METRICS LOGIC ---
   const consolidatedMetrics = useMemo((): ConsolidatedMetrics => {
-    // 1. Filtragem por data
     const filteredEntries = financialEntries.filter(e => e.date >= dateFilter.start && e.date <= dateFilter.end && e.status === 'efetuada');
     const filteredLeads = leads.filter(l => l.created_at && l.created_at.split('T')[0] >= dateFilter.start && l.created_at.split('T')[0] <= dateFilter.end);
     const filteredAppointments = appointments.filter(a => a.date >= dateFilter.start && a.date <= dateFilter.end);
 
-    // 2. Financeiro
     const receitaBruta = filteredEntries.filter(e => e.type === 'receivable').reduce((acc, curr) => acc + curr.total, 0);
     const gastosOperacionais = filteredEntries.filter(e => e.type === 'payable' && e.category !== 'Marketing').reduce((acc, curr) => acc + curr.total, 0);
-    
-    // 3. Marketing (Interligação Chave)
     const investimentoMktManual = filteredEntries.filter(e => e.type === 'payable' && e.category === 'Marketing').reduce((acc, curr) => acc + curr.total, 0);
     const finalMarketingSpend = investimentoMktManual; 
-
     const gastosTotais = gastosOperacionais + finalMarketingSpend;
 
-    // 4. Vendas
     const leadsCount = filteredLeads.length || 0;
     const conversas = filteredLeads.filter(l => l.status !== 'Novo').length;
     const vendas = filteredLeads.filter(l => l.status === 'Venda').length;
@@ -461,7 +438,7 @@ const App: React.FC = () => {
 
     return {
       marketing: {
-        investimento: finalMarketingSpend, // Agora reflete o financeiro 'Marketing'
+        investimento: finalMarketingSpend,
         leads: leadsCount,
         clicks: leadsCount * 12, 
         impressions: leadsCount * 12 * 40,
@@ -510,12 +487,11 @@ const App: React.FC = () => {
       user, updateUser, isAuthenticated, login, signUp, logout, 
       integrations, 
       
-      metaToken, setMetaToken,
       googleCalendarToken, setGoogleCalendarToken,
       googleAdsToken, setGoogleAdsToken,
       googleSheetsToken, setGoogleSheetsToken,
 
-      selectedMetaCampaigns, setSelectedMetaCampaigns, toggleIntegration, 
+      toggleIntegration, 
       dateFilter, setDateFilter, metrics: consolidatedMetrics,
       financialEntries, addFinancialEntry, updateFinancialEntry, deleteFinancialEntry,
       leads, addLead, updateLead, 

@@ -1,7 +1,6 @@
 
 import React, { useState, useEffect } from 'react';
 import { 
-  Instagram, 
   CheckCircle2, 
   Calendar, 
   Zap, 
@@ -19,11 +18,10 @@ import {
   Activity
 } from 'lucide-react';
 import { useApp } from '../App';
-import { getMetaAdAccounts, getMetaCampaigns } from '../services/metaService';
 import { signInWithGoogleAds, getAccessibleCustomers } from '../services/googleAdsService';
 import { signInWithGoogleCalendar } from '../services/googleCalendarService';
 import { signInWithGoogleSheets } from '../services/googleSheetsService';
-import { MetaAdAccount, MetaCampaign, GoogleAdAccount } from '../types';
+import { GoogleAdAccount } from '../types';
 import { supabase } from '../lib/supabase';
 
 const GoogleIcon = ({ size = 20 }: { size?: number }) => (
@@ -36,10 +34,10 @@ const GoogleIcon = ({ size = 20 }: { size?: number }) => (
 );
 
 const Integration: React.FC = () => {
-  const { integrations, metaToken, setMetaToken, googleCalendarToken, googleAdsToken, setGoogleAdsToken, setGoogleCalendarToken, googleSheetsToken, setGoogleSheetsToken } = useApp();
+  const { integrations, googleCalendarToken, googleAdsToken, setGoogleAdsToken, setGoogleCalendarToken, googleSheetsToken, setGoogleSheetsToken } = useApp();
   const [loading, setLoading] = useState<string | null>(null);
   const [copied, setCopied] = useState<string | null>(null);
-  const [activeGuideTab, setActiveGuideTab] = useState<'google' | 'meta' | 'supabase'>('google');
+  const [activeGuideTab, setActiveGuideTab] = useState<'google' | 'supabase'>('google');
   
   // Variáveis de Ambiente e URLs
   const currentOrigin = window.location.origin; 
@@ -47,19 +45,22 @@ const Integration: React.FC = () => {
   const supabaseProjectUrl = (import.meta as any).env?.VITE_SUPABASE_URL || 'https://seu-projeto.supabase.co';
   const supabaseCallbackUrl = `${supabaseProjectUrl}/auth/v1/callback`;
 
-  // States Meta & Google
-  const [metaAdAccounts, setMetaAdAccounts] = useState<MetaAdAccount[]>([]);
-  const [metaCampaigns, setMetaCampaigns] = useState<MetaCampaign[]>([]);
-  const [selectedMetaAccountId, setSelectedMetaAccountId] = useState<string>(localStorage.getItem('selected_meta_account_id') || '');
+  // States Google
   const [googleAccounts, setGoogleAccounts] = useState<GoogleAdAccount[]>([]);
   const [selectedGoogleAccountId, setSelectedGoogleAccountId] = useState<string>(localStorage.getItem('selected_google_account_id') || '');
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
+  // NOTA: Em produção, este token deve estar em Variáveis de Ambiente do Backend (Supabase Secrets)
+  // Para este MVP, estamos passando do front, mas isso não é ideal para segurança total.
   const DEV_TOKEN = (import.meta as any)?.env?.VITE_GOOGLE_ADS_DEV_TOKEN || 'SEU_DEVELOPER_TOKEN_AQUI';
 
-  // --- EFEITOS E HANDLERS (Mantidos da versão anterior) ---
+  // --- EFEITOS E HANDLERS ---
   useEffect(() => {
     if (googleAdsToken && googleAccounts.length === 0) {
       setLoading('google-ads');
+      setErrorMsg(null);
+      
+      // Pequeno delay para garantir que o estado de UI esteja pronto
       setTimeout(() => {
         getAccessibleCustomers(googleAdsToken, DEV_TOKEN)
           .then(accounts => {
@@ -71,36 +72,16 @@ const Integration: React.FC = () => {
           })
           .catch(err => {
             console.error("Erro Google:", err);
+            setErrorMsg(err.message || "Erro ao buscar contas");
             setLoading(null);
           });
       }, 1000);
     }
   }, [googleAdsToken]);
 
-  useEffect(() => {
-    if (metaToken) {
-      setLoading('meta-ads');
-      getMetaAdAccounts(metaToken)
-        .then(accounts => {
-          setMetaAdAccounts(accounts);
-          if (selectedMetaAccountId) {
-            getMetaCampaigns(selectedMetaAccountId, metaToken).then(camps => setMetaCampaigns(camps));
-          }
-          setLoading(null);
-        })
-        .catch((e) => {
-          console.error(e);
-          setLoading(null);
-          if (e.message && e.message.includes('Session does not match')) {
-            setMetaToken(null);
-            localStorage.removeItem('meta_token');
-          }
-        });
-    }
-  }, [metaToken]);
-
   const handleGoogleLogin = async () => {
     setLoading('google-ads');
+    setErrorMsg(null);
     try {
       await signInWithGoogleAds();
     } catch (error: any) {
@@ -157,28 +138,6 @@ const Integration: React.FC = () => {
       window.location.reload();
   }
 
-  const handleMetaLogin = () => {
-    const clientId = '1251859617003520'; 
-    const redirectUri = currentRedirectUrl; 
-    const scope = 'ads_read,ads_management,business_management';
-    const authUrl = `https://www.facebook.com/v19.0/dialog/oauth?client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}&scope=${scope}&response_type=token`;
-    window.location.href = authUrl;
-  };
-
-  const handleSelectMetaAccount = async (id: string) => {
-    setLoading('meta-ads');
-    try {
-      setSelectedMetaAccountId(id);
-      localStorage.setItem('selected_meta_account_id', id);
-      const camps = await getMetaCampaigns(id, metaToken!);
-      setMetaCampaigns(camps);
-    } catch(e) {
-      console.error(e);
-    } finally {
-      setLoading(null);
-    }
-  };
-
   const copyToClipboard = (text: string, id: string) => {
     navigator.clipboard.writeText(text);
     setCopied(id);
@@ -188,7 +147,6 @@ const Integration: React.FC = () => {
   // --- Mapeamento de Status Visual ---
   const connectionStatus = [
     { id: 'google-ads', label: 'Google Ads', active: !!googleAdsToken, icon: <GoogleIcon size={18} /> },
-    { id: 'meta-ads', label: 'Meta Ads', active: !!metaToken, icon: <Instagram size={18} /> },
     { id: 'calendar', label: 'G. Calendar', active: !!googleCalendarToken, icon: <Calendar size={18} /> },
     { id: 'sheets', label: 'G. Sheets', active: !!googleSheetsToken, icon: <FileSpreadsheet size={18} /> },
   ];
@@ -196,14 +154,23 @@ const Integration: React.FC = () => {
   // --- Render Helpers ---
   const renderGoogleAdsCard = () => (
     <div className="mt-4 space-y-3 animate-in fade-in">
-      <div className={`p-3 rounded-xl border ${googleAccounts.length === 0 && !loading ? 'bg-rose-50 border-rose-100' : 'bg-blue-50/50 border-blue-100'}`}>
-          <p className={`text-[10px] font-bold uppercase flex items-center gap-1 mb-2 ${googleAccounts.length === 0 && !loading ? 'text-rose-600' : 'text-blue-600'}`}>
-              <Zap size={10} /> {googleAccounts.length === 0 && !loading ? 'Erro na Conexão' : 'Conta Vinculada'}
+      <div className={`p-3 rounded-xl border ${errorMsg ? 'bg-rose-50 border-rose-100' : 'bg-blue-50/50 border-blue-100'}`}>
+          <p className={`text-[10px] font-bold uppercase flex items-center gap-1 mb-2 ${errorMsg ? 'text-rose-600' : 'text-blue-600'}`}>
+              <Zap size={10} /> {errorMsg ? 'Erro na Conexão' : 'Conta Vinculada'}
           </p>
+          
           {loading === 'google-ads' ? (
              <div className="flex items-center gap-2 text-xs text-blue-800">
                <Loader2 size={12} className="animate-spin"/> Buscando contas...
              </div>
+          ) : errorMsg ? (
+            <div className="flex items-start gap-2">
+               <AlertOctagon size={16} className="text-rose-500 shrink-0 mt-0.5" />
+               <div>
+                  <p className="text-[10px] font-bold text-rose-700 leading-tight">{errorMsg}</p>
+                  <p className="text-[9px] text-rose-500 mt-1 leading-tight">Verifique se o "Developer Token" está correto e se a conta Google tem acesso à API.</p>
+               </div>
+            </div>
           ) : googleAccounts.length > 0 ? (
             <div className="space-y-2">
                 <p className="text-xs font-bold text-navy">Selecione a Conta:</p>
@@ -219,39 +186,14 @@ const Integration: React.FC = () => {
                 </select>
             </div>
           ) : (
-            <div className="flex items-start gap-2">
-               <AlertOctagon size={16} className="text-rose-500 shrink-0 mt-0.5" />
-               <div>
-                  <p className="text-[10px] font-bold text-rose-700 leading-tight">Nenhuma conta encontrada.</p>
-                  <p className="text-[9px] text-rose-500 mt-1 leading-tight">Verifique se você configurou o "Developer Token" e se a conta tem permissão API.</p>
-               </div>
+            <div className="text-[10px] text-slate-500 italic">
+               Nenhuma conta de anúncio encontrada vinculada a este e-mail.
             </div>
           )}
       </div>
       <button onClick={handleGoogleLogout} className="w-full py-2 flex items-center justify-center gap-2 text-[10px] font-black uppercase text-rose-400 hover:text-rose-600 hover:bg-rose-50 rounded-xl transition-all">
           <LogOut size={12} /> Desconectar Google Ads
       </button>
-    </div>
-  );
-
-  const renderMetaAdsCard = () => (
-    <div className="mt-4 space-y-2 animate-in fade-in">
-      <div className="p-3 bg-emerald-50/50 rounded-xl border border-emerald-100">
-          <p className="text-[10px] text-emerald-600 font-bold uppercase mb-2">Selecione a Conta:</p>
-          <select 
-            onChange={(e) => handleSelectMetaAccount(e.target.value)}
-            value={selectedMetaAccountId}
-            className="w-full p-2 bg-white border border-emerald-100 rounded-lg text-xs font-bold text-navy focus:outline-none"
-            disabled={loading === 'meta-ads'}
-          >
-            <option value="">{metaAdAccounts.length === 0 ? 'Buscando...' : 'Selecione...'}</option>
-            {metaAdAccounts.map(acc => <option key={acc.id} value={acc.id}>{acc.name} ({acc.status || 'Ativa'})</option>)}
-          </select>
-      </div>
-      {metaCampaigns.length > 0 && (
-          <p className="text-[9px] text-center text-emerald-600 font-bold uppercase mt-2">{metaCampaigns.length} Campanhas Encontradas</p>
-      )}
-      <button onClick={() => { setMetaToken(null); localStorage.removeItem('meta_token'); }} className="w-full mt-4 py-3 text-[10px] font-black uppercase text-rose-500 hover:bg-rose-50 rounded-xl transition-all">Desconectar Meta</button>
     </div>
   );
 
@@ -317,30 +259,6 @@ const Integration: React.FC = () => {
                 className={`mt-auto w-full py-3 rounded-xl font-black text-[10px] uppercase tracking-widest transition-all flex items-center justify-center gap-2 ${loading === 'google-ads' ? 'bg-slate-100 text-slate-400' : 'bg-navy text-white hover:bg-slate-800 shadow-lg shadow-navy/20'}`}
               >
                 {loading === 'google-ads' ? <Loader2 size={14} className="animate-spin" /> : 'Conectar Agora'}
-              </button>
-            )}
-        </div>
-
-        {/* META ADS */}
-        <div className={`bg-white p-6 rounded-3xl border shadow-sm flex flex-col group transition-all ${metaToken ? 'border-emerald-100 ring-1 ring-emerald-50' : 'border-slate-200 hover:border-navy'}`}>
-            <div className="flex justify-between items-start mb-4">
-              <div className="p-3 bg-slate-50 rounded-2xl group-hover:bg-navy group-hover:text-white transition-colors"><Instagram className="text-pink-600" /></div>
-              {metaToken ? (
-                <span className="flex items-center gap-1 text-[9px] font-black text-emerald-600 bg-emerald-50 px-2 py-1 rounded-full uppercase border border-emerald-100"><CheckCircle2 size={10} /> Ativo</span>
-              ) : (
-                <span className="text-[9px] font-black text-slate-300 bg-slate-50 px-2 py-1 rounded-full uppercase border border-slate-100">Inativo</span>
-              )}
-            </div>
-            <h3 className="font-black text-navy text-sm uppercase tracking-widest">Meta Ads</h3>
-             <p className="text-[10px] text-slate-400 mt-1 mb-4 h-8">Importe campanhas do Facebook e Instagram Ads.</p>
-            
-            {metaToken ? renderMetaAdsCard() : (
-              <button 
-                onClick={handleMetaLogin}
-                disabled={!!loading}
-                className={`mt-auto w-full py-3 rounded-xl font-black text-[10px] uppercase tracking-widest transition-all flex items-center justify-center gap-2 ${loading === 'meta-ads' ? 'bg-slate-100 text-slate-400' : 'bg-navy text-white hover:bg-slate-800 shadow-lg shadow-navy/20'}`}
-              >
-                {loading === 'meta-ads' ? <Loader2 size={14} className="animate-spin" /> : 'Conectar Agora'}
               </button>
             )}
         </div>
@@ -457,12 +375,6 @@ const Integration: React.FC = () => {
                    <GoogleIcon size={14} /> Google Cloud
                 </button>
                 <button 
-                    onClick={() => setActiveGuideTab('meta')}
-                    className={`px-6 py-3 text-xs font-bold uppercase tracking-widest border-b-2 transition-all flex items-center gap-2 ${activeGuideTab === 'meta' ? 'border-navy text-navy bg-white rounded-t-xl' : 'border-transparent text-slate-400 hover:text-navy hover:bg-slate-100/50 rounded-t-xl'}`}
-                >
-                   <Instagram size={14} /> Meta Developers
-                </button>
-                <button 
                     onClick={() => setActiveGuideTab('supabase')}
                     className={`px-6 py-3 text-xs font-bold uppercase tracking-widest border-b-2 transition-all flex items-center gap-2 ${activeGuideTab === 'supabase' ? 'border-navy text-navy bg-white rounded-t-xl' : 'border-transparent text-slate-400 hover:text-navy hover:bg-slate-100/50 rounded-t-xl'}`}
                 >
@@ -528,47 +440,6 @@ const Integration: React.FC = () => {
                                 <li>Se o app estiver em modo "Testing", você precisa adicionar manualmente os e-mails de teste.</li>
                                 <li>Para o Google Ads funcionar, o "Developer Token" deve ser de nível "Basic" ou "Standard". Tokens de teste funcionam apenas com contas de teste.</li>
                             </ul>
-                        </div>
-                    </div>
-                </div>
-            )}
-
-            {/* CONTEÚDO META */}
-            {activeGuideTab === 'meta' && (
-                <div className="animate-in fade-in slide-in-from-bottom-2 duration-300">
-                    <div className="flex justify-between items-start mb-6">
-                        <div>
-                            <h5 className="font-bold text-navy text-sm">Configuração do Meta for Developers</h5>
-                            <p className="text-xs text-slate-500 mt-1">Necessário para Facebook Login e Marketing API.</p>
-                        </div>
-                        <a href="https://developers.facebook.com/apps" target="_blank" rel="noreferrer" className="flex items-center gap-1 text-[10px] font-bold text-pink-600 bg-pink-50 px-3 py-1.5 rounded-lg hover:bg-pink-100 transition-colors">
-                            Abrir Developers <ExternalLink size={12} />
-                        </a>
-                    </div>
-
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-                        <div className="space-y-4">
-                            <div className="p-4 bg-pink-50 rounded-xl border border-pink-100">
-                                <label className="text-[10px] font-black text-pink-700 uppercase block mb-2">Valid OAuth Redirect URIs</label>
-                                <div className="flex gap-2">
-                                    <code className="flex-1 bg-white p-3 rounded-lg text-xs font-mono text-pink-800 border border-pink-200 break-all">{currentRedirectUrl}/</code>
-                                    <button onClick={() => copyToClipboard(currentRedirectUrl + '/', 'meta_redirect')} className="p-2 bg-pink-200 rounded-lg text-pink-700 hover:bg-pink-600 hover:text-white transition-colors flex-shrink-0">{copied === 'meta_redirect' ? <CheckCircle2 size={16}/> : <Copy size={16}/>}</button>
-                                </div>
-                                <p className="text-[10px] text-pink-600 mt-2 leading-tight">
-                                    No painel do Facebook Login &gt; Configurações. <br/>
-                                    <strong>Atenção:</strong> O Facebook exige HTTPS.
-                                </p>
-                            </div>
-                        </div>
-                        <div className="text-xs text-slate-500 space-y-3 leading-relaxed">
-                            <p><strong>Passo a passo no Meta:</strong></p>
-                            <ol className="list-decimal pl-4 space-y-2">
-                                <li>Crie um App do tipo "Business".</li>
-                                <li>Adicione o produto "Facebook Login for Business".</li>
-                                <li>Adicione as permissões: <code>ads_read</code>, <code>ads_management</code>.</li>
-                                <li>Cole a URL ao lado no campo "Valid OAuth Redirect URIs".</li>
-                                <li>Certifique-se que seu usuário é Administrador do App e da Conta de Anúncios.</li>
-                            </ol>
                         </div>
                     </div>
                 </div>

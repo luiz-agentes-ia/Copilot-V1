@@ -19,20 +19,6 @@ export interface DateRange {
 }
 
 // --- TABELA: MARKETING_METRICS ---
-export interface MetaAdAccount {
-  id: string;
-  name: string;
-  status: string;
-  objective: string;
-}
-
-export interface MetaCampaign {
-  id: string;
-  name: string;
-  status: string;
-  objective: string;
-}
-
 export interface GoogleAdAccount {
   id: string;
   name: string; // resourceName no Google Ads
