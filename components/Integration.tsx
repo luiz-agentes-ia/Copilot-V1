@@ -50,19 +50,15 @@ const Integration: React.FC = () => {
   const [selectedGoogleAccountId, setSelectedGoogleAccountId] = useState<string>(localStorage.getItem('selected_google_account_id') || '');
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
-  // NOTA: Em produção, este token deve estar em Variáveis de Ambiente do Backend (Supabase Secrets)
-  // Para este MVP, estamos passando do front, mas isso não é ideal para segurança total.
-  const DEV_TOKEN = (import.meta as any)?.env?.VITE_GOOGLE_ADS_DEV_TOKEN || 'SEU_DEVELOPER_TOKEN_AQUI';
-
   // --- EFEITOS E HANDLERS ---
   useEffect(() => {
     if (googleAdsToken && googleAccounts.length === 0) {
       setLoading('google-ads');
       setErrorMsg(null);
       
-      // Pequeno delay para garantir que o estado de UI esteja pronto
       setTimeout(() => {
-        getAccessibleCustomers(googleAdsToken, DEV_TOKEN)
+        // Chamamos a função sem precisar passar developer token (o servidor cuida disso)
+        getAccessibleCustomers(googleAdsToken)
           .then(accounts => {
             setGoogleAccounts(accounts);
             if (accounts.length > 0 && !selectedGoogleAccountId) {
@@ -72,7 +68,7 @@ const Integration: React.FC = () => {
           })
           .catch(err => {
             console.error("Erro Google:", err);
-            setErrorMsg(err.message || "Erro ao buscar contas");
+            setErrorMsg("Falha ao conectar. Verifique o console.");
             setLoading(null);
           });
       }, 1000);
@@ -168,7 +164,9 @@ const Integration: React.FC = () => {
                <AlertOctagon size={16} className="text-rose-500 shrink-0 mt-0.5" />
                <div>
                   <p className="text-[10px] font-bold text-rose-700 leading-tight">{errorMsg}</p>
-                  <p className="text-[9px] text-rose-500 mt-1 leading-tight">Verifique se o "Developer Token" está correto e se a conta Google tem acesso à API.</p>
+                  <p className="text-[9px] text-rose-500 mt-1 leading-tight">
+                    Tente desconectar e conectar novamente.
+                  </p>
                </div>
             </div>
           ) : googleAccounts.length > 0 ? (

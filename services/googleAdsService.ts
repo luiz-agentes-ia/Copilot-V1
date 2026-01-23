@@ -4,7 +4,6 @@ import { GoogleAdAccount } from '../types';
 
 /**
  * Inicia o fluxo de Login com Google Ads.
- * Define a flag 'auth_intent' para 'google_ads'.
  */
 export const signInWithGoogleAds = async () => {
   if (!supabase) return;
@@ -15,11 +14,10 @@ export const signInWithGoogleAds = async () => {
   const { data, error } = await supabase.auth.signInWithOAuth({
     provider: 'google',
     options: {
-      // Escopo obrigatório para ler dados de campanhas
       scopes: 'https://www.googleapis.com/auth/adwords',
       redirectTo: returnUrl,
       queryParams: {
-        access_type: 'offline', // Garante o refresh token para acesso contínuo
+        access_type: 'offline',
         prompt: 'consent',
       },
     },
@@ -30,27 +28,26 @@ export const signInWithGoogleAds = async () => {
 };
 
 /**
- * Busca a lista de contas acessíveis via Proxy (Edge Function).
+ * Busca a lista de contas via Backend Interno (/api/google-ads).
+ * O developer_token agora é injetado pelo servidor, não precisa passar aqui.
  */
-export const getAccessibleCustomers = async (accessToken: string, developerToken: string): Promise<GoogleAdAccount[]> => {
+export const getAccessibleCustomers = async (accessToken: string, _developerToken?: string): Promise<GoogleAdAccount[]> => {
   try {
-    const { data, error } = await supabase.functions.invoke('google-ads-proxy', {
-      body: {
-        action: 'list_customers',
-        access_token: accessToken,
-        developer_token: developerToken
-      }
+    const response = await fetch('/api/google-ads', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            action: 'list_customers',
+            access_token: accessToken
+        })
     });
 
-    if (error) {
-       console.error("Edge Function Error (List):", error);
-       throw new Error("Falha de conexão com o servidor de anúncios.");
+    if (!response.ok) {
+       const err = await response.json();
+       throw new Error(err.error || "Falha ao conectar com o servidor.");
     }
     
-    if (data.error) {
-       throw new Error(data.error);
-    }
-
+    const data = await response.json();
     return data.customers || [];
   } catch (err: any) {
     console.error("Service Error:", err.message);
@@ -59,34 +56,31 @@ export const getAccessibleCustomers = async (accessToken: string, developerToken
 };
 
 /**
- * Busca métricas de campanhas via Proxy (Edge Function).
+ * Busca campanhas via Backend Interno (/api/google-ads).
  */
-export const getGoogleCampaigns = async (customerId: string, accessToken: string, developerToken: string, dateRange?: { start: string, end: string }) => {
+export const getGoogleCampaigns = async (customerId: string, accessToken: string, _developerToken?: string, dateRange?: { start: string, end: string }) => {
   try {
-    const { data, error } = await supabase.functions.invoke('google-ads-proxy', {
-      body: {
-        action: 'get_campaigns',
-        customer_id: customerId,
-        access_token: accessToken,
-        developer_token: developerToken,
-        date_range: dateRange
-      }
+    const response = await fetch('/api/google-ads', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            action: 'get_campaigns',
+            customer_id: customerId,
+            access_token: accessToken,
+            date_range: dateRange
+        })
     });
 
-    if (error) {
-        console.error("Edge Function Error (Campaigns):", error);
-        throw new Error("Falha ao sincronizar campanhas.");
+    if (!response.ok) {
+        const err = await response.json();
+        throw new Error(err.error || "Falha ao buscar campanhas.");
     }
 
-    if (data.error) {
-        throw new Error(data.error);
-    }
-
+    const data = await response.json();
     return data.results || [];
 
   } catch (error: any) {
     console.error("Service Error:", error.message);
-    // Retorna array vazio em caso de erro para não quebrar a UI
     return [];
   }
 };
