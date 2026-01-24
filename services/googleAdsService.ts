@@ -28,8 +28,30 @@ export const signInWithGoogleAds = async () => {
 };
 
 /**
+ * Função auxiliar para tratar a resposta do servidor com segurança
+ */
+const handleApiResponse = async (response: Response) => {
+  // Lê o corpo da resposta como texto PRIMEIRO para evitar o erro "Unexpected end of JSON"
+  const text = await response.text();
+  
+  let data;
+  try {
+    // Tenta converter o texto para JSON. Se for vazio, vira objeto vazio.
+    data = text ? JSON.parse(text) : {};
+  } catch (e) {
+    console.error("Non-JSON response received:", text);
+    throw new Error(`Erro de comunicação com o servidor (${response.status}): A resposta não é válida. Detalhes: ${text.substring(0, 50)}...`);
+  }
+
+  if (!response.ok) {
+     throw new Error(data.error || `Erro do servidor: ${response.statusText}`);
+  }
+
+  return data;
+};
+
+/**
  * Busca a lista de contas via Backend Interno (/api/google-ads).
- * O developer_token agora é injetado pelo servidor, não precisa passar aqui.
  */
 export const getAccessibleCustomers = async (accessToken: string, _developerToken?: string): Promise<GoogleAdAccount[]> => {
   try {
@@ -42,15 +64,10 @@ export const getAccessibleCustomers = async (accessToken: string, _developerToke
         })
     });
 
-    if (!response.ok) {
-       const err = await response.json();
-       throw new Error(err.error || "Falha ao conectar com o servidor.");
-    }
-    
-    const data = await response.json();
+    const data = await handleApiResponse(response);
     return data.customers || [];
   } catch (err: any) {
-    console.error("Service Error:", err.message);
+    console.error("Service Error (List Customers):", err.message);
     throw err;
   }
 };
@@ -71,16 +88,12 @@ export const getGoogleCampaigns = async (customerId: string, accessToken: string
         })
     });
 
-    if (!response.ok) {
-        const err = await response.json();
-        throw new Error(err.error || "Falha ao buscar campanhas.");
-    }
-
-    const data = await response.json();
+    const data = await handleApiResponse(response);
     return data.results || [];
 
   } catch (error: any) {
-    console.error("Service Error:", error.message);
+    console.error("Service Error (Get Campaigns):", error.message);
+    // Retorna array vazio em caso de erro para não quebrar a tela de Marketing
     return [];
   }
 };

@@ -68,7 +68,8 @@ const Integration: React.FC = () => {
           })
           .catch(err => {
             console.error("Erro Google:", err);
-            setErrorMsg("Falha ao conectar. Verifique o console.");
+            // EXIBE O ERRO REAL VINDO DO SERVIDOR
+            setErrorMsg(err.message || "Erro desconhecido ao conectar.");
             setLoading(null);
           });
       }, 1000);
@@ -165,7 +166,9 @@ const Integration: React.FC = () => {
                <div>
                   <p className="text-[10px] font-bold text-rose-700 leading-tight">{errorMsg}</p>
                   <p className="text-[9px] text-rose-500 mt-1 leading-tight">
-                    Tente desconectar e conectar novamente.
+                    {errorMsg.includes("Developer Token") 
+                        ? "O servidor não encontrou o Token de Desenvolvedor no .env" 
+                        : "Tente desconectar e conectar novamente."}
                   </p>
                </div>
             </div>
