@@ -169,7 +169,7 @@ const App: React.FC = () => {
         const mapped = data.map((d: any) => ({ 
             ...d, 
             potentialValue: Number(d.potential_value), 
-            lastMessage: d.last_message,
+            lastMessage: d.last_message, 
             lastInteraction: '1d' 
         }));
         setLeads(mapped);
@@ -234,7 +234,7 @@ const App: React.FC = () => {
              if (authIntent === 'google_ads') {
                 setGoogleAdsToken(session.provider_token);
                 localStorage.setItem('google_ads_token', session.provider_token);
-                localStorage.removeItem('auth_intent'); // Limpa apenas se sucesso
+                localStorage.removeItem('auth_intent');
              } 
              else if (authIntent === 'google_calendar') {
                 setGoogleCalendarToken(session.provider_token);
@@ -248,7 +248,6 @@ const App: React.FC = () => {
              }
           } else if (authIntent) {
               console.warn("Auth intent existe (" + authIntent + ") mas provider_token não veio na sessão.");
-              // Mantém o intent para tentar em uma próxima atualização de sessão se ocorrer
           }
        } else {
           setUser(null);
@@ -262,7 +261,7 @@ const App: React.FC = () => {
     // Verifica a sessão atual imediatamente
     supabase.auth.getSession().then(({ data: { session } }) => handleSession(session));
     
-    // Ouve mudanças (login, logout, refresh token)
+    // Ouve mudanças
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
         console.log("Auth event:", event);
         handleSession(session);
@@ -284,7 +283,6 @@ const App: React.FC = () => {
 
   const login = async (email: string, pass: string) => {
     try {
-      // FIX CRÍTICO: .trim() para remover espaços acidentais no final do email
       const cleanEmail = email.trim();
       const { error } = await supabase!.auth.signInWithPassword({ email: cleanEmail, password: pass });
       if (error) throw error;
@@ -296,7 +294,6 @@ const App: React.FC = () => {
   };
 
   const signUp = async (email: string, pass: string, name: string) => {
-    // FIX CRÍTICO: .trim() para remover espaços acidentais
     const cleanEmail = email.trim();
     const { data, error } = await supabase!.auth.signUp({ 
         email: cleanEmail, 
@@ -306,23 +303,28 @@ const App: React.FC = () => {
     
     if (error) throw error;
 
-    // Se o cadastro funcionou mas não há sessão, significa que o e-mail precisa de confirmação
-    // Este é o comportamento correto para segurança
     if (data.user && !data.session) {
        throw new Error("Conta criada com sucesso! Verifique seu e-mail para ativar o acesso.");
     }
   };
 
+  // LOGOUT ROBUSTO (TRY/FINALLY)
   const logout = async () => { 
-    await supabase!.auth.signOut(); 
-    localStorage.clear(); 
-    setGoogleAdsToken(null);
-    setGoogleCalendarToken(null);
-    setGoogleSheetsToken(null);
-    setIsAuthenticated(false); 
+    try {
+        await supabase!.auth.signOut(); 
+    } catch (e) {
+        console.warn("Erro ao desconectar do Supabase, forçando limpeza local", e);
+    } finally {
+        localStorage.clear(); 
+        setGoogleAdsToken(null);
+        setGoogleCalendarToken(null);
+        setGoogleSheetsToken(null);
+        setUser(null);
+        setIsAuthenticated(false); 
+    }
   };
 
-  // --- CRUD OPERATIONS COM ATUALIZAÇÃO OTIMISTA ---
+  // ... (Resto das funções de CRUD: addFinancialEntry, updateFinancialEntry, etc.) ...
   
   // Financeiro
   const addFinancialEntry = async (entry: FinancialEntry) => {
@@ -337,7 +339,6 @@ const App: React.FC = () => {
     }]);
 
     if (error) {
-        console.error("Erro ao adicionar transação:", error);
         setFinancialEntries(prev => prev.filter(e => e.id !== tempId));
         alert("Erro ao salvar. Tente novamente.");
     }
@@ -351,7 +352,6 @@ const App: React.FC = () => {
     }).eq('id', entry.id);
 
     if (error) {
-       console.error("Erro ao atualizar:", error);
        fetchFinancials();
        alert("Erro ao atualizar transação.");
     }
@@ -363,9 +363,8 @@ const App: React.FC = () => {
     const { error } = await supabase!.from('transactions').delete().eq('id', id);
 
     if (error) {
-       console.error("Erro ao deletar:", error);
        setFinancialEntries(backup);
-       alert("Erro ao excluir. O item não foi removido.");
+       alert("Erro ao excluir.");
     }
   };
 
@@ -381,10 +380,7 @@ const App: React.FC = () => {
         temperature: lead.temperature, last_message: lead.lastMessage, potential_value: lead.potentialValue
     }]);
 
-    if (error) {
-        setLeads(prev => prev.filter(l => l.id !== tempId));
-        console.error(error);
-    }
+    if (error) setLeads(prev => prev.filter(l => l.id !== tempId));
   };
 
   const updateLead = async (lead: Lead) => {
@@ -549,10 +545,9 @@ const AuthScreen = ({ onLogin, onSignUp }: { onLogin: any, onSignUp: any }) => {
         await onSignUp(email, pass, name);
       }
     } catch (err: any) {
-      // Se for mensagem de sucesso (throw no signUp), tratamos como aviso
       if (err.message && err.message.includes("Conta criada com sucesso")) {
         setSuccessMsg(err.message);
-        setIsLogin(true); // Muda para tela de login para ele ver a msg
+        setIsLogin(true); 
       } else {
         setError(err.message || 'Erro ao processar autenticação.');
       }
