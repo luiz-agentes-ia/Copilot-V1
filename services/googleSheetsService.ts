@@ -1,4 +1,3 @@
-
 import { supabase } from '../lib/supabase';
 
 /**
@@ -48,8 +47,16 @@ export const createTestSpreadsheet = async (accessToken: string, title: string) 
       })
     });
     
-    if (!response.ok) throw new Error('Falha ao criar planilha');
-    return await response.json();
+    const text = await response.text();
+    let data;
+    try {
+        data = text ? JSON.parse(text) : {};
+    } catch {
+        throw new Error('Resposta inválida do Google Sheets');
+    }
+    
+    if (!response.ok) throw new Error(data.error?.message || 'Falha ao criar planilha');
+    return data;
   } catch (error) {
     console.error("Sheets Error:", error);
     return null;

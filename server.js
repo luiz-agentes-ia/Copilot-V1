@@ -1,4 +1,3 @@
-
 import express from 'express';
 import cors from 'cors';
 import path from 'path';
@@ -14,6 +13,16 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 app.use(cors());
 app.use(express.json());
+
+// Helper para parse seguro de JSON
+const safeJson = async (response) => {
+  const text = await response.text();
+  try {
+    return text ? JSON.parse(text) : {};
+  } catch (e) {
+    throw new Error(`Failed to parse JSON from ${response.url}. Status: ${response.status}. Body: ${text.slice(0, 100)}`);
+  }
+};
 
 // Rota de Diagnóstico (Health Check)
 app.get('/api/health', (req, res) => {
@@ -49,7 +58,7 @@ app.post('/api/google-ads', async (req, res) => {
     const API_VERSION = 'v16';
     const BASE_URL = `https://googleads.googleapis.com/${API_VERSION}`;
 
-    // 1. LISTAR CLIENTES
+    // 1. LISTAR CLIENTES (AGORA COM NOMES REAIS)
     if (action === 'list_customers') {
       const url = `${BASE_URL}/customers:listAccessibleCustomers`;
       console.log(`Forwarding to Google: ${url}`);
@@ -66,30 +75,71 @@ app.post('/api/google-ads', async (req, res) => {
       if (!response.ok) {
         const errText = await response.text();
         console.error("Google API Erro (List):", errText);
-        
-        let readableError = errText;
-        try {
-            const errJson = JSON.parse(errText);
-            readableError = errJson.error?.message || errText;
-        } catch (e) {}
-
-        // Retorna status 502 (Bad Gateway) para indicar que o erro veio do Google, não do nosso server
-        return res.status(502).json({ error: `Google recusou a conexão: ${readableError}` });
+        return res.status(502).json({ error: `Google recusou a conexão inicial.` });
       }
 
-      const data = await response.json();
-      const customers = (data.resourceNames || []).map((resourceName) => {
+      const data = await safeJson(response);
+      const resourceNames = data.resourceNames || [];
+
+      // Passo 2: Buscar detalhes (Nome e se é MCC) para cada conta encontrada
+      // Fazemos isso em paralelo para ser rápido
+      const detailedCustomers = await Promise.all(resourceNames.map(async (resourceName) => {
         const id = resourceName.replace('customers/', '');
+        
+        try {
+            // Query para pegar o nome da conta e se é gerente
+            const queryUrl = `${BASE_URL}/customers/${id}/googleAds:search`;
+            const query = `SELECT customer.id, customer.descriptive_name, customer.manager, customer.status FROM customer LIMIT 1`;
+            
+            const detailResponse = await fetch(queryUrl, {
+                method: 'POST',
+                headers: {
+                    'Authorization': `Bearer ${access_token}`,
+                    'developer-token': developer_token,
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ query })
+            });
+
+            if (detailResponse.ok) {
+                const detailData = await detailResponse.json();
+                const info = detailData.results?.[0]?.customer;
+                
+                if (info) {
+                    return {
+                        id: info.id,
+                        name: resourceName,
+                        descriptiveName: info.descriptiveName || `Conta ${info.id}`,
+                        isManager: info.manager || false,
+                        status: info.status,
+                        currencyCode: 'BRL',
+                        timeZone: 'America/Sao_Paulo'
+                    };
+                }
+            }
+        } catch (e) {
+            console.warn(`Erro ao buscar detalhes da conta ${id}:`, e.message);
+        }
+
+        // Fallback se a query falhar
         return {
-          id: id,
-          name: resourceName,
-          descriptiveName: `Conta ${id}`,
-          currencyCode: 'BRL',
-          timeZone: 'America/Sao_Paulo'
+            id: id,
+            name: resourceName,
+            descriptiveName: `Conta ${id} (Sem detalhes)`,
+            isManager: false,
+            currencyCode: 'BRL',
+            timeZone: 'America/Sao_Paulo'
         };
+      }));
+
+      // Filtra contas canceladas/fechadas se desejar, ou retorna todas
+      // Ordena: MCCs primeiro, depois alfabético
+      const sortedCustomers = detailedCustomers.sort((a, b) => {
+          if (a.isManager === b.isManager) return a.descriptiveName.localeCompare(b.descriptiveName);
+          return a.isManager ? -1 : 1;
       });
 
-      return res.json({ customers });
+      return res.json({ customers: sortedCustomers });
     }
 
     // 2. BUSCAR CAMPANHAS
@@ -119,6 +169,11 @@ app.post('/api/google-ads', async (req, res) => {
       }
       query += ` LIMIT 50`;
 
+      // IMPORTANTE: Se a conta selecionada for MCC, precisamos passar o login-customer-id no header?
+      // Geralmente, para ler métricas, devemos selecionar a conta FILHA, não a MCC.
+      // A query vai falhar se tentarmos ler métricas de campanha diretamente na MCC root.
+      // O frontend deve garantir que o usuário selecione uma conta de anúncio real, não a MCC.
+
       const response = await fetch(url, {
         method: 'POST',
         headers: {
@@ -138,7 +193,7 @@ app.post('/api/google-ads', async (req, res) => {
         return res.status(502).json({ error: `Erro na consulta Google Ads: ${errText}` });
       }
 
-      const data = await response.json();
+      const data = await safeJson(response);
       return res.json({ results: data.results || [] });
     }
 

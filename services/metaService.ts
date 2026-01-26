@@ -2,15 +2,26 @@
 const META_API_VERSION = 'v19.0';
 const GRAPH_URL = `https://graph.facebook.com/${META_API_VERSION}`;
 
+const handleMetaResponse = async (response: Response) => {
+  const text = await response.text();
+  let data;
+  try {
+      data = text ? JSON.parse(text) : {};
+  } catch {
+      throw new Error('Resposta inválida do Meta Ads');
+  }
+  return { ok: response.ok, data };
+};
+
 export const getMetaAdAccounts = async (token: string) => {
   try {
     const response = await fetch(`${GRAPH_URL}/me/adaccounts?fields=name,id,currency,account_status&access_token=${token}`);
+    const { ok, data } = await handleMetaResponse(response);
     
-    if (!response.ok) {
+    if (!ok) {
         throw new Error('Falha ao buscar contas de anúncio');
     }
 
-    const data = await response.json();
     if (data.error) throw new Error(data.error.message);
     return data.data || [];
   } catch (error) {
@@ -23,12 +34,12 @@ export const getMetaCampaigns = async (accountId: string, token: string) => {
   try {
     // Busca campanhas ativas ou pausadas (ignora arquivadas/deletadas)
     const response = await fetch(`${GRAPH_URL}/${accountId}/campaigns?fields=name,id,status,objective,effective_status&effective_status=['ACTIVE','PAUSED']&access_token=${token}`);
+    const { ok, data } = await handleMetaResponse(response);
     
-    if (!response.ok) {
+    if (!ok) {
         return [];
     }
 
-    const data = await response.json();
     if (data.error) throw new Error(data.error.message);
     return data.data || [];
   } catch (error) {
@@ -51,12 +62,13 @@ export const getCampaignInsights = async (campaignId: string, token: string, ran
 
   try {
     const response = await fetch(url);
-    if (!response.ok) {
+    const { ok, data } = await handleMetaResponse(response);
+    
+    if (!ok) {
         // Se falhar o insight específico, retorna zerado para não quebrar o map
         return { spend: 0, clicks: 0, impressions: 0, conversions: 0, cpc: 0, ctr: 0 };
     }
 
-    const data = await response.json();
     if (data.error) throw new Error(data.error.message);
     
     // Se não tiver dados (campanha rodou mas não gastou no período, ou array vazio), retorna zeros

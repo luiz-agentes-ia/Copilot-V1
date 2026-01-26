@@ -1,4 +1,3 @@
-
 import React, { useState, createContext, useContext, useEffect, useMemo, useCallback } from 'react';
 import Sidebar from './components/Sidebar';
 import Dashboard from './components/Dashboard';
@@ -285,17 +284,33 @@ const App: React.FC = () => {
 
   const login = async (email: string, pass: string) => {
     try {
-      const { error } = await supabase!.auth.signInWithPassword({ email, password: pass });
+      // FIX CRÍTICO: .trim() para remover espaços acidentais no final do email
+      const cleanEmail = email.trim();
+      const { error } = await supabase!.auth.signInWithPassword({ email: cleanEmail, password: pass });
       if (error) throw error;
     } catch (err: any) {
-      if (err.message.includes("Invalid login credentials")) throw new Error("Credenciais inválidas.");
+      if (err.message.includes("Invalid login credentials")) throw new Error("E-mail ou senha incorretos.");
+      if (err.message.includes("Email not confirmed")) throw new Error("Por favor, confirme seu e-mail antes de entrar.");
       throw err;
     }
   };
 
   const signUp = async (email: string, pass: string, name: string) => {
-    const { error } = await supabase!.auth.signUp({ email, password: pass, options: { data: { name } } });
+    // FIX CRÍTICO: .trim() para remover espaços acidentais
+    const cleanEmail = email.trim();
+    const { data, error } = await supabase!.auth.signUp({ 
+        email: cleanEmail, 
+        password: pass, 
+        options: { data: { name } } 
+    });
+    
     if (error) throw error;
+
+    // Se o cadastro funcionou mas não há sessão, significa que o e-mail precisa de confirmação
+    // Este é o comportamento correto para segurança
+    if (data.user && !data.session) {
+       throw new Error("Conta criada com sucesso! Verifique seu e-mail para ativar o acesso.");
+    }
   };
 
   const logout = async () => { 
@@ -513,7 +528,6 @@ const App: React.FC = () => {
   );
 };
 
-// ... (AuthScreen e resto do arquivo mantidos)
 const AuthScreen = ({ onLogin, onSignUp }: { onLogin: any, onSignUp: any }) => {
   const [isLogin, setIsLogin] = useState(true);
   const [email, setEmail] = useState('');
@@ -521,16 +535,27 @@ const AuthScreen = ({ onLogin, onSignUp }: { onLogin: any, onSignUp: any }) => {
   const [name, setName] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [successMsg, setSuccessMsg] = useState('');
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
     setError('');
+    setSuccessMsg('');
     try {
-      if (isLogin) await onLogin(email, pass);
-      else await onSignUp(email, pass, name);
+      if (isLogin) {
+        await onLogin(email, pass);
+      } else {
+        await onSignUp(email, pass, name);
+      }
     } catch (err: any) {
-      setError(err.message || 'Erro ao processar autenticação.');
+      // Se for mensagem de sucesso (throw no signUp), tratamos como aviso
+      if (err.message && err.message.includes("Conta criada com sucesso")) {
+        setSuccessMsg(err.message);
+        setIsLogin(true); // Muda para tela de login para ele ver a msg
+      } else {
+        setError(err.message || 'Erro ao processar autenticação.');
+      }
     } finally {
       setLoading(false);
     }
@@ -549,11 +574,19 @@ const AuthScreen = ({ onLogin, onSignUp }: { onLogin: any, onSignUp: any }) => {
             <h2 className="text-2xl font-black text-navy tracking-tight">{isLogin ? 'Bem-vindo de volta' : 'Crie sua conta'}</h2>
             <p className="text-xs text-slate-400 font-bold uppercase tracking-widest">{isLogin ? 'Acesse seu painel de controle' : 'Comece agora gratuitamente'}</p>
           </div>
+          
           {error && (
             <div className="p-4 bg-rose-50 border border-rose-100 text-rose-600 text-[11px] rounded-2xl font-bold flex items-center gap-3 animate-pulse">
               <AlertCircle size={18} /> {error}
             </div>
           )}
+
+          {successMsg && (
+            <div className="p-4 bg-emerald-50 border border-emerald-100 text-emerald-600 text-[11px] rounded-2xl font-bold flex items-center gap-3">
+              <ShieldCheck size={18} /> {successMsg}
+            </div>
+          )}
+
           <form onSubmit={handleSubmit} className="space-y-4">
             {!isLogin && (
               <div className="space-y-1">
@@ -575,7 +608,7 @@ const AuthScreen = ({ onLogin, onSignUp }: { onLogin: any, onSignUp: any }) => {
             </button>
           </form>
           <div className="text-center pt-2">
-            <button onClick={() => { setIsLogin(!isLogin); setError(''); }} className="text-[11px] font-black text-slate-400 hover:text-navy uppercase tracking-widest transition-colors flex items-center justify-center gap-2 mx-auto">
+            <button onClick={() => { setIsLogin(!isLogin); setError(''); setSuccessMsg(''); }} className="text-[11px] font-black text-slate-400 hover:text-navy uppercase tracking-widest transition-colors flex items-center justify-center gap-2 mx-auto">
               {isLogin ? 'Não tem uma conta? Crie agora' : 'Já tem conta? Fazer login'}
               <ArrowRight size={14} />
             </button>

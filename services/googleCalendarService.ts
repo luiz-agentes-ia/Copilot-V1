@@ -1,4 +1,3 @@
-
 import { supabase } from '../lib/supabase';
 
 /**
@@ -55,11 +54,18 @@ export const getUpcomingEvents = async (accessToken: string): Promise<GoogleCale
       }
     );
 
-    if (!response.ok) {
-      throw new Error('Falha ao buscar eventos do Google Calendar');
+    const text = await response.text();
+    let data;
+    try {
+        data = text ? JSON.parse(text) : {};
+    } catch {
+        throw new Error('Resposta inválida do Google Calendar');
     }
 
-    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data.error?.message || 'Falha ao buscar eventos do Google Calendar');
+    }
+
     return data.items || [];
   } catch (error) {
     console.error("Erro Google Calendar:", error);

@@ -15,7 +15,9 @@ import {
   FileSpreadsheet,
   MessageCircle,
   Network,
-  Activity
+  Activity,
+  AlertCircle,
+  Briefcase
 } from 'lucide-react';
 import { useApp } from '../App';
 import { signInWithGoogleAds, getAccessibleCustomers } from '../services/googleAdsService';
@@ -33,6 +35,11 @@ const GoogleIcon = ({ size = 20 }: { size?: number }) => (
   </svg>
 );
 
+// Interface extendida para incluir flag de gerente
+interface ExtendedAdAccount extends GoogleAdAccount {
+    isManager?: boolean;
+}
+
 const Integration: React.FC = () => {
   const { integrations, googleCalendarToken, googleAdsToken, setGoogleAdsToken, setGoogleCalendarToken, googleSheetsToken, setGoogleSheetsToken } = useApp();
   const [loading, setLoading] = useState<string | null>(null);
@@ -46,7 +53,7 @@ const Integration: React.FC = () => {
   const supabaseCallbackUrl = `${supabaseProjectUrl}/auth/v1/callback`;
 
   // States Google
-  const [googleAccounts, setGoogleAccounts] = useState<GoogleAdAccount[]>([]);
+  const [googleAccounts, setGoogleAccounts] = useState<ExtendedAdAccount[]>([]);
   const [selectedGoogleAccountId, setSelectedGoogleAccountId] = useState<string>(localStorage.getItem('selected_google_account_id') || '');
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
@@ -62,7 +69,13 @@ const Integration: React.FC = () => {
           .then(accounts => {
             setGoogleAccounts(accounts);
             if (accounts.length > 0 && !selectedGoogleAccountId) {
-                handleSelectGoogleAccount(accounts[0].id);
+                // Tenta selecionar a primeira conta que NÃO seja gerente, se possível
+                const firstStandardAccount = accounts.find(acc => !(acc as any).isManager);
+                if (firstStandardAccount) {
+                    handleSelectGoogleAccount(firstStandardAccount.id);
+                } else {
+                    handleSelectGoogleAccount(accounts[0].id);
+                }
             }
             setLoading(null);
           })
@@ -153,12 +166,12 @@ const Integration: React.FC = () => {
     <div className="mt-4 space-y-3 animate-in fade-in">
       <div className={`p-3 rounded-xl border ${errorMsg ? 'bg-rose-50 border-rose-100' : 'bg-blue-50/50 border-blue-100'}`}>
           <p className={`text-[10px] font-bold uppercase flex items-center gap-1 mb-2 ${errorMsg ? 'text-rose-600' : 'text-blue-600'}`}>
-              <Zap size={10} /> {errorMsg ? 'Erro na Conexão' : 'Conta Vinculada'}
+              <Zap size={10} /> {errorMsg ? 'Erro na Conexão' : 'Conexão Estabelecida'}
           </p>
           
           {loading === 'google-ads' ? (
              <div className="flex items-center gap-2 text-xs text-blue-800">
-               <Loader2 size={12} className="animate-spin"/> Buscando contas...
+               <Loader2 size={12} className="animate-spin"/> Buscando contas vinculadas...
              </div>
           ) : errorMsg ? (
             <div className="flex items-start gap-2">
@@ -182,13 +195,32 @@ const Integration: React.FC = () => {
                 >
                   <option value="">Selecione...</option>
                   {googleAccounts.map(acc => (
-                    <option key={acc.id} value={acc.id}>{acc.descriptiveName}</option>
+                    <option key={acc.id} value={acc.id}>
+                        {acc.isManager ? '[MCC] ' : ''} {acc.descriptiveName} ({acc.id})
+                    </option>
                   ))}
                 </select>
+                {googleAccounts.find(acc => acc.id === selectedGoogleAccountId)?.isManager && (
+                    <div className="flex items-center gap-2 p-2 bg-amber-50 rounded-lg border border-amber-100 mt-2">
+                        <Briefcase size={12} className="text-amber-600 shrink-0" />
+                        <p className="text-[9px] text-amber-700 leading-tight">
+                            Você selecionou uma <strong>Conta de Gerente (MCC)</strong>. 
+                            Recomendamos selecionar uma conta de anúncio individual para ver métricas detalhadas.
+                        </p>
+                    </div>
+                )}
             </div>
           ) : (
-            <div className="text-[10px] text-slate-500 italic">
-               Nenhuma conta de anúncio encontrada vinculada a este e-mail.
+            <div className="p-3 bg-amber-50 rounded-xl border border-amber-100 space-y-2">
+               <div className="flex items-start gap-2 text-amber-600">
+                  <AlertCircle size={16} className="shrink-0 mt-0.5" />
+                  <p className="text-[10px] font-bold leading-tight">
+                     Conexão ativa, mas nenhuma conta foi encontrada.
+                  </p>
+               </div>
+               <p className="text-[9px] text-amber-700 pl-6 leading-relaxed">
+                  Verifique se você está logado com o e-mail correto (admin) ou se já concluiu a criação da conta em <a href="https://ads.google.com" target="_blank" rel="noreferrer" className="underline font-bold">ads.google.com</a>.
+               </p>
             </div>
           )}
       </div>

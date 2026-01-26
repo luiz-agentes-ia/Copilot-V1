@@ -1,6 +1,28 @@
-
 import { supabase } from '../lib/supabase';
 import { GoogleAdAccount } from '../types';
+
+/**
+ * Helper para tratar a resposta do servidor com segurança.
+ * Evita o erro "Unexpected end of JSON input" lendo como texto primeiro.
+ */
+const handleApiResponse = async (response: Response) => {
+  const text = await response.text();
+  
+  let data;
+  try {
+    // Tenta converter o texto para JSON. Se for vazio, vira objeto vazio.
+    data = text ? JSON.parse(text) : {};
+  } catch (e) {
+    console.error("Non-JSON response received:", text);
+    throw new Error(`Erro de comunicação com o servidor (${response.status}): A resposta não é válida.`);
+  }
+
+  if (!response.ok) {
+     throw new Error(data.error || `Erro do servidor: ${response.statusText}`);
+  }
+
+  return data;
+};
 
 /**
  * Inicia o fluxo de Login com Google Ads.
@@ -24,29 +46,6 @@ export const signInWithGoogleAds = async () => {
   });
 
   if (error) throw error;
-  return data;
-};
-
-/**
- * Função auxiliar para tratar a resposta do servidor com segurança
- */
-const handleApiResponse = async (response: Response) => {
-  // Lê o corpo da resposta como texto PRIMEIRO para evitar o erro "Unexpected end of JSON"
-  const text = await response.text();
-  
-  let data;
-  try {
-    // Tenta converter o texto para JSON. Se for vazio, vira objeto vazio.
-    data = text ? JSON.parse(text) : {};
-  } catch (e) {
-    console.error("Non-JSON response received:", text);
-    throw new Error(`Erro de comunicação com o servidor (${response.status}): A resposta não é válida. Detalhes: ${text.substring(0, 50)}...`);
-  }
-
-  if (!response.ok) {
-     throw new Error(data.error || `Erro do servidor: ${response.statusText}`);
-  }
-
   return data;
 };
 
