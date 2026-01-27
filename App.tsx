@@ -1,3 +1,4 @@
+
 import React, { useState, createContext, useContext, useEffect, useMemo, useCallback } from 'react';
 import Sidebar from './components/Sidebar';
 import Dashboard from './components/Dashboard';
@@ -8,8 +9,6 @@ import Automation from './components/Automation';
 import Financial from './components/Financial';
 import Integration from './components/Integration';
 import Profile from './components/Profile';
-import PrivacyPolicy from './components/PrivacyPolicy'; 
-import TermsOfService from './components/TermsOfService'; 
 import { AppSection, DateRange, ConsolidatedMetrics, FinancialEntry, Lead, Appointment } from './types';
 import { Menu, X, Bot, Loader2, AlertCircle, ArrowRight, ShieldCheck } from 'lucide-react';
 import { supabase } from './lib/supabase';
@@ -88,10 +87,6 @@ const calculateRange = (label: string): DateRange => {
 };
 
 const App: React.FC = () => {
-  const currentPath = window.location.pathname;
-  const isPrivacyRoute = currentPath.includes('/privacy');
-  const isTermsRoute = currentPath.includes('/terms');
-
   const [session, setSession] = useState<any>(null);
   const [user, setUser] = useState<User | null>(null);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
@@ -488,8 +483,6 @@ const App: React.FC = () => {
     }
   };
 
-  if (isPrivacyRoute) return <PrivacyPolicy />;
-  if (isTermsRoute) return <TermsOfService />;
   if (authLoading) return <div className="min-h-screen bg-navy flex items-center justify-center"><Loader2 className="text-white animate-spin" size={48}/></div>;
   if (!isAuthenticated) return <AuthScreen onLogin={login} onSignUp={signUp} />;
 
@@ -612,9 +605,9 @@ const AuthScreen = ({ onLogin, onSignUp }: { onLogin: any, onSignUp: any }) => {
         <div className="space-y-4">
             <div className="flex items-center justify-center gap-2 text-slate-400 opacity-50"><ShieldCheck size={14} /><span className="text-[10px] font-black uppercase tracking-widest">Criptografia de Ponta a Ponta</span></div>
             <div className="flex justify-center items-center gap-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">
-                <a href="/terms" className="hover:text-navy transition-colors border-b border-transparent hover:border-navy">Termos de Serviço</a>
+                <a href="https://iatask.com.br/termo/" target="_blank" rel="noopener noreferrer" className="hover:text-navy transition-colors border-b border-transparent hover:border-navy">Termos de Serviço</a>
                 <span className="text-slate-300">•</span>
-                <a href="/privacy" className="hover:text-navy transition-colors border-b border-transparent hover:border-navy">Política de Privacidade</a>
+                <a href="https://iatask.com.br/politica/" target="_blank" rel="noopener noreferrer" className="hover:text-navy transition-colors border-b border-transparent hover:border-navy">Política de Privacidade</a>
             </div>
         </div>
       </div>

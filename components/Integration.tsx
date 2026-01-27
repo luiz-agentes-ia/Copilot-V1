@@ -11,20 +11,20 @@ import {
   Database,
   AlertOctagon,
   ExternalLink,
-  HelpCircle,
   FileSpreadsheet,
-  MessageCircle,
-  Network,
   Activity,
   AlertCircle,
-  Briefcase,
   Search,
-  ArrowRight
+  ArrowRight,
+  DownloadCloud,
+  ChevronRight,
+  Table,
+  FileDown
 } from 'lucide-react';
 import { useApp } from '../App';
 import { signInWithGoogleAds, getAccessibleCustomers } from '../services/googleAdsService';
 import { signInWithGoogleCalendar } from '../services/googleCalendarService';
-import { signInWithGoogleSheets } from '../services/googleSheetsService';
+import { signInWithGoogleSheets, listSpreadsheets, getSpreadsheetDetails, getSheetData } from '../services/googleSheetsService';
 import { GoogleAdAccount } from '../types';
 import { supabase } from '../lib/supabase';
 
@@ -42,7 +42,7 @@ interface ExtendedAdAccount extends GoogleAdAccount {
 }
 
 const Integration: React.FC = () => {
-  const { integrations, googleCalendarToken, googleAdsToken, setGoogleAdsToken, setGoogleCalendarToken, googleSheetsToken, setGoogleSheetsToken } = useApp();
+  const { integrations, googleCalendarToken, googleAdsToken, setGoogleAdsToken, setGoogleCalendarToken, googleSheetsToken, setGoogleSheetsToken, addLead, user } = useApp();
   const [loading, setLoading] = useState<string | null>(null);
   const [copied, setCopied] = useState<string | null>(null);
   const [activeGuideTab, setActiveGuideTab] = useState<'google' | 'supabase'>('google');
@@ -59,18 +59,24 @@ const Integration: React.FC = () => {
   const [manualId, setManualId] = useState('');
   const [showManualInput, setShowManualInput] = useState(false);
 
+  // States Google Sheets Import
+  const [isImporting, setIsImporting] = useState(false);
+  const [spreadsheets, setSpreadsheets] = useState<any[]>([]);
+  const [selectedSpreadsheet, setSelectedSpreadsheet] = useState<string>('');
+  const [sheetTabs, setSheetTabs] = useState<string[]>([]);
+  const [selectedTab, setSelectedTab] = useState<string>('');
+  const [importStatus, setImportStatus] = useState<string>('');
+
   // --- EFEITOS E HANDLERS ---
   useEffect(() => {
     if (googleAdsToken && googleAccounts.length === 0) {
       setLoading('google-ads');
       setErrorMsg(null);
       
-      // Pequeno delay para UX
       setTimeout(() => {
         getAccessibleCustomers(googleAdsToken)
           .then(accounts => {
             setGoogleAccounts(accounts);
-            // Auto-selecionar se encontrar
             if (accounts.length > 0 && !selectedGoogleAccountId) {
                 const firstStandardAccount = accounts.find(acc => !(acc as any).isManager);
                 if (firstStandardAccount) {
@@ -102,7 +108,6 @@ const Integration: React.FC = () => {
   };
 
   const handleSelectGoogleAccount = (id: string) => {
-    // Limpa formatação visual se usuário colou com traços
     const cleanId = id.replace(/[^0-9]/g, '');
     setSelectedGoogleAccountId(cleanId);
     localStorage.setItem('selected_google_account_id', cleanId);
@@ -116,7 +121,6 @@ const Integration: React.FC = () => {
         return;
     }
     handleSelectGoogleAccount(manualId);
-    // Adiciona uma conta "fake" na lista visual apenas para o usuário ver que está selecionado
     setGoogleAccounts(prev => {
         if (prev.find(p => p.id === manualId.replace(/[^0-9]/g, ''))) return prev;
         return [...prev, {
@@ -172,13 +176,116 @@ const Integration: React.FC = () => {
       window.location.reload();
   }
 
+  // --- SHEETS IMPORT LOGIC ---
+  const startImportFlow = async () => {
+      if (!googleSheetsToken) return;
+      setIsImporting(true);
+      setImportStatus('Buscando planilhas...');
+      try {
+          const files = await listSpreadsheets(googleSheetsToken);
+          setSpreadsheets(files);
+          setImportStatus('');
+      } catch (err) {
+          setImportStatus('Erro ao listar arquivos. Tente reconectar.');
+          console.error(err);
+      }
+  };
+
+  const downloadTemplate = () => {
+      const csvContent = "data:text/csv;charset=utf-8,Nome,Telefone,Status,Valor\nJoão Silva,11999999999,Novo,100\nMaria Souza,21988888888,Agendado,200";
+      const encodedUri = encodeURI(csvContent);
+      const link = document.createElement("a");
+      link.setAttribute("href", encodedUri);
+      link.setAttribute("download", "modelo_leads_copilot.csv");
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+  };
+
+  const handleSpreadsheetSelect = async (id: string) => {
+      setSelectedSpreadsheet(id);
+      setSelectedTab('');
+      setSheetTabs([]);
+      setImportStatus('Buscando abas...');
+      try {
+          if (!googleSheetsToken) throw new Error("Token invalido");
+          const tabs = await getSpreadsheetDetails(googleSheetsToken, id);
+          setSheetTabs(tabs);
+          setImportStatus('');
+      } catch (err) {
+          setImportStatus('Erro ao ler detalhes da planilha.');
+      }
+  };
+
+  const processImport = async () => {
+      if (!googleSheetsToken || !selectedSpreadsheet || !selectedTab) return;
+      setImportStatus('Importando dados... (Isso pode levar alguns segundos)');
+      
+      try {
+          const rows = await getSheetData(googleSheetsToken, selectedSpreadsheet, selectedTab);
+          
+          if (!rows || rows.length < 2) {
+              setImportStatus('A planilha parece vazia ou sem cabeçalho.');
+              return;
+          }
+
+          // Identificar cabeçalhos (Linha 0)
+          const headers = rows[0].map((h: string) => h.toLowerCase().trim());
+          
+          // Mapeamento Flexível
+          const nameIndex = headers.findIndex((h: string) => h.includes('nome') || h.includes('cliente') || h.includes('paciente') || h.includes('name'));
+          const phoneIndex = headers.findIndex((h: string) => h.includes('tel') || h.includes('cel') || h.includes('phone') || h.includes('whatsapp') || h.includes('contato'));
+          const statusIndex = headers.findIndex((h: string) => h.includes('status') || h.includes('fase'));
+          const valueIndex = headers.findIndex((h: string) => h.includes('valor') || h.includes('preço') || h.includes('potencial'));
+
+          if (nameIndex === -1 || phoneIndex === -1) {
+              setImportStatus('Erro: Cabeçalho inválido. Certifique-se de ter as colunas "Nome" e "Telefone".');
+              return;
+          }
+
+          let importedCount = 0;
+
+          // Processar linhas (A partir da linha 1)
+          for (let i = 1; i < rows.length; i++) {
+              const row = rows[i];
+              const name = row[nameIndex];
+              const phone = row[phoneIndex];
+
+              if (name && phone) {
+                  // Insere no Supabase via addLead (do AppContext)
+                  await addLead({
+                      id: '', // Gerado pelo addLead
+                      name: name,
+                      phone: phone.replace(/\D/g, ''), // Limpa telefone
+                      status: statusIndex !== -1 ? (row[statusIndex] || 'Novo') : 'Novo',
+                      temperature: 'Cold',
+                      lastMessage: 'Importado via Planilha',
+                      potentialValue: valueIndex !== -1 ? (parseFloat(row[valueIndex]) || user?.ticketValue) : user?.ticketValue,
+                      source: 'Google Sheets'
+                  });
+                  importedCount++;
+              }
+          }
+
+          setImportStatus(`Sucesso! ${importedCount} leads importados.`);
+          setTimeout(() => {
+              setIsImporting(false);
+              setImportStatus('');
+              setSelectedSpreadsheet('');
+          }, 3000);
+
+      } catch (err) {
+          console.error(err);
+          setImportStatus('Erro ao processar importação.');
+      }
+  };
+
   const copyToClipboard = (text: string, id: string) => {
     navigator.clipboard.writeText(text);
     setCopied(id);
     setTimeout(() => setCopied(null), 2000);
   };
 
-  // --- Render Google Ads Content ---
   const renderGoogleAdsCard = () => (
     <div className="mt-4 space-y-3 animate-in fade-in">
       <div className={`p-3 rounded-xl border ${errorMsg ? 'bg-rose-50 border-rose-100' : 'bg-blue-50/50 border-blue-100'}`}>
@@ -217,58 +324,30 @@ const Integration: React.FC = () => {
                     </option>
                   ))}
                 </select>
-                <button 
-                    onClick={() => setShowManualInput(!showManualInput)}
-                    className="text-[9px] text-blue-600 font-bold hover:underline mt-1 block w-full text-right"
-                >
-                    Não encontrou? Inserir Manualmente
-                </button>
             </div>
           ) : (
             <div className="p-3 bg-amber-50 rounded-xl border border-amber-100 space-y-3">
                <div className="flex items-start gap-2 text-amber-600">
                   <AlertCircle size={16} className="shrink-0 mt-0.5" />
                   <p className="text-[10px] font-bold leading-tight">
-                     Nenhuma conta encontrada automaticamente.
+                     Nenhuma conta encontrada.
                   </p>
                </div>
-               
-               <div className="text-[9px] text-amber-800 leading-relaxed pl-6">
-                 <strong>Dica:</strong> Se você usa um <em>Developer Token de Teste</em>, apenas contas marcadas como "Test Account" no Google Ads aparecerão aqui. Contas reais (Produção) ficam invisíveis para tokens de teste.
-                 <br/><br/>
-                 Tente inserir o ID manualmente abaixo:
-               </div>
-
-               {!showManualInput ? (
-                   <button 
-                     onClick={() => setShowManualInput(true)}
-                     className="w-full py-2 bg-white border border-amber-200 rounded-lg text-[10px] font-bold text-amber-700 hover:bg-amber-100 transition-colors flex items-center justify-center gap-1"
-                   >
+               {!showManualInput && (
+                   <button onClick={() => setShowManualInput(true)} className="w-full py-2 bg-white border border-amber-200 rounded-lg text-[10px] font-bold text-amber-700 hover:bg-amber-100 transition-colors flex items-center justify-center gap-1">
                      <Search size={12} /> Inserir ID Manualmente
                    </button>
-               ) : null}
+               )}
             </div>
           )}
 
-          {/* INPUT MANUAL (Fallback) */}
           {showManualInput && (
              <form onSubmit={handleManualSubmit} className="mt-3 pt-3 border-t border-blue-100 animate-in fade-in">
                 <label className="text-[9px] font-bold text-navy uppercase mb-1 block">ID da Conta Google Ads</label>
                 <div className="flex gap-2">
-                    <input 
-                        type="text" 
-                        placeholder="Ex: 123-456-7890" 
-                        value={manualId}
-                        onChange={(e) => setManualId(e.target.value)}
-                        className="flex-1 p-2 rounded-lg border border-slate-200 text-xs text-navy focus:outline-none focus:border-navy"
-                    />
-                    <button type="submit" className="p-2 bg-navy text-white rounded-lg hover:bg-slate-800 transition-colors">
-                        <ArrowRight size={14} />
-                    </button>
+                    <input type="text" placeholder="Ex: 123-456-7890" value={manualId} onChange={(e) => setManualId(e.target.value)} className="flex-1 p-2 rounded-lg border border-slate-200 text-xs text-navy focus:outline-none focus:border-navy" />
+                    <button type="submit" className="p-2 bg-navy text-white rounded-lg hover:bg-slate-800 transition-colors"><ArrowRight size={14} /></button>
                 </div>
-                <p className="text-[8px] text-slate-400 mt-1 italic">
-                    Copie o número no canto superior da sua tela do Google Ads.
-                </p>
              </form>
           )}
       </div>
@@ -309,12 +388,6 @@ const Integration: React.FC = () => {
                         </p>
                     </div>
                 </div>
-                {item.active && (
-                    <div className="relative flex h-2 w-2">
-                      <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-                      <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
-                    </div>
-                )}
             </div>
         ))}
       </div>
@@ -328,21 +401,13 @@ const Integration: React.FC = () => {
         <div className={`bg-white p-6 rounded-3xl border shadow-sm flex flex-col group transition-all ${googleAdsToken ? 'border-emerald-100 ring-1 ring-emerald-50' : 'border-slate-200 hover:border-navy'}`}>
             <div className="flex justify-between items-start mb-4">
               <div className="p-3 bg-slate-50 rounded-2xl group-hover:bg-navy group-hover:text-white transition-colors"><GoogleIcon size={24} /></div>
-              {googleAdsToken ? (
-                <span className="flex items-center gap-1 text-[9px] font-black text-emerald-600 bg-emerald-50 px-2 py-1 rounded-full uppercase border border-emerald-100"><CheckCircle2 size={10} /> Ativo</span>
-              ) : (
-                <span className="text-[9px] font-black text-slate-300 bg-slate-50 px-2 py-1 rounded-full uppercase border border-slate-100">Inativo</span>
-              )}
+              {googleAdsToken ? <span className="flex items-center gap-1 text-[9px] font-black text-emerald-600 bg-emerald-50 px-2 py-1 rounded-full uppercase border border-emerald-100"><CheckCircle2 size={10} /> Ativo</span> : <span className="text-[9px] font-black text-slate-300 bg-slate-50 px-2 py-1 rounded-full uppercase border border-slate-100">Inativo</span>}
             </div>
             <h3 className="font-black text-navy text-sm uppercase tracking-widest">Google Ads</h3>
-            <p className="text-[10px] text-slate-400 mt-1 mb-4 h-8">Conecte sua conta de anúncios para importar métricas de campanhas.</p>
+            <p className="text-[10px] text-slate-400 mt-1 mb-4 h-8">Conecte sua conta de anúncios para importar métricas.</p>
             
             {googleAdsToken ? renderGoogleAdsCard() : (
-              <button 
-                onClick={handleGoogleLogin}
-                disabled={!!loading}
-                className={`mt-auto w-full py-3 rounded-xl font-black text-[10px] uppercase tracking-widest transition-all flex items-center justify-center gap-2 ${loading === 'google-ads' ? 'bg-slate-100 text-slate-400' : 'bg-navy text-white hover:bg-slate-800 shadow-lg shadow-navy/20'}`}
-              >
+              <button onClick={handleGoogleLogin} disabled={!!loading} className={`mt-auto w-full py-3 rounded-xl font-black text-[10px] uppercase tracking-widest transition-all flex items-center justify-center gap-2 ${loading === 'google-ads' ? 'bg-slate-100 text-slate-400' : 'bg-navy text-white hover:bg-slate-800 shadow-lg shadow-navy/20'}`}>
                 {loading === 'google-ads' ? <Loader2 size={14} className="animate-spin" /> : 'Conectar Agora'}
               </button>
             )}
@@ -352,30 +417,14 @@ const Integration: React.FC = () => {
         <div className={`bg-white p-6 rounded-3xl border shadow-sm flex flex-col group transition-all ${googleCalendarToken ? 'border-emerald-100 ring-1 ring-emerald-50' : 'border-slate-200 hover:border-navy'}`}>
             <div className="flex justify-between items-start mb-4">
               <div className="p-3 bg-slate-50 rounded-2xl group-hover:bg-navy group-hover:text-white transition-colors"><Calendar className="text-amber-500" /></div>
-              {googleCalendarToken ? (
-                <span className="flex items-center gap-1 text-[9px] font-black text-emerald-600 bg-emerald-50 px-2 py-1 rounded-full uppercase border border-emerald-100"><CheckCircle2 size={10} /> Ativo</span>
-              ) : (
-                <span className="text-[9px] font-black text-slate-300 bg-slate-50 px-2 py-1 rounded-full uppercase border border-slate-100">Inativo</span>
-              )}
+              {googleCalendarToken ? <span className="flex items-center gap-1 text-[9px] font-black text-emerald-600 bg-emerald-50 px-2 py-1 rounded-full uppercase border border-emerald-100"><CheckCircle2 size={10} /> Ativo</span> : <span className="text-[9px] font-black text-slate-300 bg-slate-50 px-2 py-1 rounded-full uppercase border border-slate-100">Inativo</span>}
             </div>
             <h3 className="font-black text-navy text-sm uppercase tracking-widest">Google Calendar</h3>
-             <p className="text-[10px] text-slate-400 mt-1 mb-4 h-8">Sincronize sua agenda para detectar ocupação e ociosidade.</p>
-            
+            <p className="text-[10px] text-slate-400 mt-1 mb-4 h-8">Sincronize sua agenda para detectar ocupação.</p>
             {googleCalendarToken ? (
-               <div className="mt-auto">
-                 <div className="p-2 bg-amber-50 rounded-lg border border-amber-100 text-[10px] text-amber-700 font-bold mb-3 text-center">
-                    Sincronização Automática
-                 </div>
-                 <button onClick={handleCalendarLogout} className="w-full py-2 flex items-center justify-center gap-2 text-[10px] font-black uppercase text-rose-400 hover:text-rose-600 hover:bg-rose-50 rounded-xl transition-all">
-                     <LogOut size={12} /> Desconectar
-                 </button>
-               </div>
+               <div className="mt-auto"><button onClick={handleCalendarLogout} className="w-full py-2 flex items-center justify-center gap-2 text-[10px] font-black uppercase text-rose-400 hover:text-rose-600 hover:bg-rose-50 rounded-xl transition-all"><LogOut size={12} /> Desconectar</button></div>
             ) : (
-              <button 
-                onClick={handleCalendarLogin}
-                disabled={!!loading}
-                className={`mt-auto w-full py-3 rounded-xl font-black text-[10px] uppercase tracking-widest transition-all flex items-center justify-center gap-2 ${loading === 'calendar' ? 'bg-slate-100 text-slate-400' : 'bg-navy text-white hover:bg-slate-800 shadow-lg shadow-navy/20'}`}
-              >
+              <button onClick={handleCalendarLogin} disabled={!!loading} className={`mt-auto w-full py-3 rounded-xl font-black text-[10px] uppercase tracking-widest transition-all flex items-center justify-center gap-2 ${loading === 'calendar' ? 'bg-slate-100 text-slate-400' : 'bg-navy text-white hover:bg-slate-800 shadow-lg shadow-navy/20'}`}>
                 {loading === 'calendar' ? <Loader2 size={14} className="animate-spin" /> : 'Conectar Agora'}
               </button>
             )}
@@ -385,30 +434,88 @@ const Integration: React.FC = () => {
         <div className={`bg-white p-6 rounded-3xl border shadow-sm flex flex-col group transition-all ${googleSheetsToken ? 'border-emerald-100 ring-1 ring-emerald-50' : 'border-slate-200 hover:border-navy'}`}>
             <div className="flex justify-between items-start mb-4">
               <div className="p-3 bg-slate-50 rounded-2xl group-hover:bg-navy group-hover:text-white transition-colors"><FileSpreadsheet className="text-emerald-500" /></div>
-              {googleSheetsToken ? (
-                <span className="flex items-center gap-1 text-[9px] font-black text-emerald-600 bg-emerald-50 px-2 py-1 rounded-full uppercase border border-emerald-100"><CheckCircle2 size={10} /> Ativo</span>
-              ) : (
-                <span className="text-[9px] font-black text-slate-300 bg-slate-50 px-2 py-1 rounded-full uppercase border border-slate-100">Inativo</span>
-              )}
+              {googleSheetsToken ? <span className="flex items-center gap-1 text-[9px] font-black text-emerald-600 bg-emerald-50 px-2 py-1 rounded-full uppercase border border-emerald-100"><CheckCircle2 size={10} /> Ativo</span> : <span className="text-[9px] font-black text-slate-300 bg-slate-50 px-2 py-1 rounded-full uppercase border border-slate-100">Inativo</span>}
             </div>
             <h3 className="font-black text-navy text-sm uppercase tracking-widest">Google Sheets</h3>
-             <p className="text-[10px] text-slate-400 mt-1 mb-4 h-8">Exporte leads e dados financeiros automaticamente para planilhas.</p>
+            <p className="text-[10px] text-slate-400 mt-1 mb-4 h-8">Importe leads diretamente das suas planilhas.</p>
             
             {googleSheetsToken ? (
-               <div className="mt-auto">
-                 <div className="p-2 bg-emerald-50 rounded-lg border border-emerald-100 text-[10px] text-emerald-700 font-bold mb-3 text-center">
-                    Permissão de Leitura/Escrita
-                 </div>
-                 <button onClick={handleSheetsLogout} className="w-full py-2 flex items-center justify-center gap-2 text-[10px] font-black uppercase text-rose-400 hover:text-rose-600 hover:bg-rose-50 rounded-xl transition-all">
-                     <LogOut size={12} /> Desconectar
-                 </button>
+               <div className="mt-auto space-y-3">
+                  {!isImporting ? (
+                      <button onClick={startImportFlow} className="w-full py-3 bg-emerald-600 text-white rounded-xl font-black text-[10px] uppercase tracking-widest shadow-lg hover:bg-emerald-700 transition-all flex items-center justify-center gap-2">
+                          <DownloadCloud size={14} /> Importar Leads
+                      </button>
+                  ) : (
+                      <div className="p-3 bg-emerald-50 rounded-xl border border-emerald-100 space-y-3 animate-in fade-in">
+                          
+                          {/* INSTRUÇÕES VISUAIS PARA O FORMATO DA PLANILHA */}
+                          <div className="bg-white p-3 rounded-lg border border-emerald-100 mb-2">
+                              <p className="text-[9px] font-bold text-navy uppercase mb-2 flex items-center gap-1">
+                                  <Table size={12} className="text-emerald-600"/> Modelo Obrigatório
+                              </p>
+                              <p className="text-[9px] text-slate-500 mb-2 leading-relaxed">
+                                  Sua planilha <strong>precisa</strong> ter uma linha de cabeçalho com os nomes exatos abaixo para funcionar:
+                              </p>
+                              <div className="grid grid-cols-4 gap-1 text-[8px] font-mono text-center">
+                                   <div className="bg-slate-100 p-1 rounded border border-slate-200 text-navy font-bold">Nome</div>
+                                   <div className="bg-slate-100 p-1 rounded border border-slate-200 text-navy font-bold">Telefone</div>
+                                   <div className="bg-slate-50 p-1 rounded border border-slate-100 text-slate-400">Status</div>
+                                   <div className="bg-slate-50 p-1 rounded border border-slate-100 text-slate-400">Valor</div>
+                              </div>
+                              <div className="flex justify-between items-center mt-3">
+                                <p className="text-[8px] text-rose-500 font-bold">* Colunas "Nome" e "Telefone" são obrigatórias.</p>
+                                <button onClick={downloadTemplate} className="text-[8px] font-bold text-emerald-600 flex items-center gap-1 hover:underline">
+                                    <FileDown size={10} /> Baixar Modelo CSV
+                                </button>
+                              </div>
+                          </div>
+
+                          <p className="text-[10px] font-bold text-emerald-800">{importStatus || 'Selecione o arquivo:'}</p>
+                          
+                          {/* 1. Seleção de Planilha */}
+                          {spreadsheets.length > 0 && !selectedSpreadsheet && (
+                              <div className="max-h-32 overflow-y-auto custom-scrollbar space-y-1">
+                                  {spreadsheets.map(file => (
+                                      <button key={file.id} onClick={() => handleSpreadsheetSelect(file.id)} className="w-full text-left px-2 py-1.5 hover:bg-emerald-100 rounded text-xs text-navy truncate block">
+                                          {file.name}
+                                      </button>
+                                  ))}
+                              </div>
+                          )}
+
+                          {/* 2. Seleção de Aba */}
+                          {selectedSpreadsheet && sheetTabs.length > 0 && !selectedTab && (
+                              <div className="space-y-2">
+                                  <p className="text-[9px] text-slate-400 uppercase font-bold">Selecione a Aba:</p>
+                                  <div className="max-h-24 overflow-y-auto custom-scrollbar space-y-1">
+                                      {sheetTabs.map(tab => (
+                                          <button key={tab} onClick={() => setSelectedTab(tab)} className="w-full text-left px-2 py-1.5 hover:bg-emerald-100 rounded text-xs text-navy truncate block">
+                                              {tab}
+                                          </button>
+                                      ))}
+                                  </div>
+                              </div>
+                          )}
+
+                          {/* 3. Confirmação e Aviso de Formato */}
+                          {selectedSpreadsheet && selectedTab && (
+                             <div className="space-y-3">
+                                <button onClick={processImport} className="w-full py-2 bg-emerald-600 text-white rounded-lg text-xs font-bold hover:bg-emerald-700 transition-colors">
+                                   Processar Importação
+                                </button>
+                             </div>
+                          )}
+
+                          <button onClick={() => { setIsImporting(false); setSelectedSpreadsheet(''); }} className="text-[9px] text-slate-400 hover:text-navy underline w-full text-center">Cancelar</button>
+                      </div>
+                  )}
+
+                  <button onClick={handleSheetsLogout} className="w-full py-2 flex items-center justify-center gap-2 text-[10px] font-black uppercase text-rose-400 hover:text-rose-600 hover:bg-rose-50 rounded-xl transition-all">
+                      <LogOut size={12} /> Desconectar
+                  </button>
                </div>
             ) : (
-              <button 
-                onClick={handleSheetsLogin}
-                disabled={!!loading}
-                className={`mt-auto w-full py-3 rounded-xl font-black text-[10px] uppercase tracking-widest transition-all flex items-center justify-center gap-2 ${loading === 'sheets' ? 'bg-slate-100 text-slate-400' : 'bg-navy text-white hover:bg-slate-800 shadow-lg shadow-navy/20'}`}
-              >
+              <button onClick={handleSheetsLogin} disabled={!!loading} className={`mt-auto w-full py-3 rounded-xl font-black text-[10px] uppercase tracking-widest transition-all flex items-center justify-center gap-2 ${loading === 'sheets' ? 'bg-slate-100 text-slate-400' : 'bg-navy text-white hover:bg-slate-800 shadow-lg shadow-navy/20'}`}>
                 {loading === 'sheets' ? <Loader2 size={14} className="animate-spin" /> : 'Conectar Agora'}
               </button>
             )}
@@ -430,12 +537,6 @@ const Integration: React.FC = () => {
                     className={`px-6 py-3 text-xs font-bold uppercase tracking-widest border-b-2 transition-all flex items-center gap-2 ${activeGuideTab === 'google' ? 'border-navy text-navy bg-white rounded-t-xl' : 'border-transparent text-slate-400 hover:text-navy hover:bg-slate-100/50 rounded-t-xl'}`}
                 >
                    <GoogleIcon size={14} /> Google Cloud
-                </button>
-                <button 
-                    onClick={() => setActiveGuideTab('supabase')}
-                    className={`px-6 py-3 text-xs font-bold uppercase tracking-widest border-b-2 transition-all flex items-center gap-2 ${activeGuideTab === 'supabase' ? 'border-navy text-navy bg-white rounded-t-xl' : 'border-transparent text-slate-400 hover:text-navy hover:bg-slate-100/50 rounded-t-xl'}`}
-                >
-                   <Database size={14} /> Supabase
                 </button>
             </div>
          </div>
@@ -469,24 +570,8 @@ const Integration: React.FC = () => {
                                 </div>
                             </div>
                         </div>
-                         <div className="text-xs text-slate-500 space-y-3 leading-relaxed">
-                            <div className="p-4 bg-amber-50 rounded-xl border border-amber-100">
-                                <p className="text-amber-800 font-bold mb-1"><AlertCircle size={14} className="inline mr-1"/> Atenção: Contas de Teste</p>
-                                <p>Se o seu "Developer Token" for de nível "Test Account", a API só retornará contas marcadas como "Teste" no Google Ads, mesmo que você tenha acesso a contas de produção.</p>
-                            </div>
-                        </div>
                     </div>
                 </div>
-            )}
-            
-            {activeGuideTab === 'supabase' && (
-               <div className="animate-in fade-in slide-in-from-bottom-2 duration-300">
-                   {/* Conteúdo Supabase simplificado para brevidade */}
-                   <div className="space-y-4">
-                       <p className="text-sm text-slate-500">Configure as Redirect URLs no painel de autenticação do Supabase.</p>
-                       <code className="block p-4 bg-slate-100 rounded-xl text-xs font-mono">{currentRedirectUrl}</code>
-                   </div>
-               </div>
             )}
          </div>
       </div>

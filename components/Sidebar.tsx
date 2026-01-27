@@ -1,3 +1,4 @@
+
 import React from 'react';
 import { 
   LayoutDashboard, 
@@ -8,7 +9,8 @@ import {
   Link2, 
   UserCircle,
   Calendar,
-  LogOut
+  LogOut,
+  ExternalLink
 } from 'lucide-react';
 import { AppSection } from '../types';
 import { useApp } from '../App';
@@ -39,8 +41,12 @@ const Sidebar: React.FC<SidebarProps> = ({ activeSection, onNavigate }) => {
   return (
     <div className="w-72 md:w-64 bg-navy text-white h-full flex flex-col shadow-2xl md:shadow-none border-r border-white/5">
       <div className="p-6 shrink-0">
-        <h1 className="text-xl font-bold tracking-tight">COPILOT AI</h1>
-        <p className="text-xs text-slate-400 mt-1 uppercase tracking-widest font-medium">Gestão & Crescimento</p>
+        <a href="https://iatask.com.br/copilot-v1/" target="_blank" rel="noopener noreferrer" className="block group">
+           <h1 className="text-xl font-bold tracking-tight flex items-center gap-2 group-hover:text-blue-300 transition-colors">
+             COPILOT AI <ExternalLink size={12} className="opacity-0 group-hover:opacity-100 transition-opacity" />
+           </h1>
+           <p className="text-xs text-slate-400 mt-1 uppercase tracking-widest font-medium">Gestão & Crescimento</p>
+        </a>
       </div>
       
       {/* Added overflow-y-auto to allow scrolling on small screens if menu is tall */}
@@ -83,9 +89,9 @@ const Sidebar: React.FC<SidebarProps> = ({ activeSection, onNavigate }) => {
         </button>
 
         <div className="mt-4 flex justify-center gap-3 text-[9px] font-medium text-slate-500 uppercase tracking-wider">
-             <a href="/terms" className="hover:text-slate-300 transition-colors">Termos</a>
+             <a href="https://iatask.com.br/termo/" target="_blank" rel="noopener noreferrer" className="hover:text-slate-300 transition-colors">Termos</a>
              <span>•</span>
-             <a href="/privacy" className="hover:text-slate-300 transition-colors">Privacidade</a>
+             <a href="https://iatask.com.br/politica/" target="_blank" rel="noopener noreferrer" className="hover:text-slate-300 transition-colors">Privacidade</a>
         </div>
       </div>
     </div>
