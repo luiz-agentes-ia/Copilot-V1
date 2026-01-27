@@ -37,7 +37,7 @@ app.get('/api/health', (req, res) => {
 
 // --- PROXY GOOGLE ADS (BACKEND) ---
 app.post('/api/google-ads', async (req, res) => {
-  console.log(`[${new Date().toISOString()}] Recebida requisição /api/google-ads`);
+  console.log(`[${new Date().toISOString()}] Recebida requisição /api/google-ads [${req.body.action}]`);
 
   try {
     const { action, access_token, customer_id, date_range } = req.body;
@@ -55,13 +55,13 @@ app.post('/api/google-ads', async (req, res) => {
       return res.status(500).json({ error: 'Configuração de Servidor Incompleta: Developer Token ausente.' });
     }
 
-    const API_VERSION = 'v16';
+    // ATUALIZADO PARA V19 (Versão Estável Recente)
+    const API_VERSION = 'v19'; 
     const BASE_URL = `https://googleads.googleapis.com/${API_VERSION}`;
 
-    // 1. LISTAR CLIENTES (AGORA COM NOMES REAIS)
+    // 1. LISTAR CLIENTES (HIERARQUIA PROFUNDA)
     if (action === 'list_customers') {
       const url = `${BASE_URL}/customers:listAccessibleCustomers`;
-      console.log(`Forwarding to Google: ${url}`);
       
       const response = await fetch(url, {
         method: 'GET',
@@ -75,68 +75,119 @@ app.post('/api/google-ads', async (req, res) => {
       if (!response.ok) {
         const errText = await response.text();
         console.error("Google API Erro (List):", errText);
-        return res.status(502).json({ error: `Google recusou a conexão inicial.` });
+        if (errText.includes("TEST_ACCOUNT") || errText.includes("DEVELOPER_TOKEN_PROHIBITED")) {
+             return res.status(403).json({ error: 'Seu Developer Token é de nível TESTE. Você só pode acessar contas de teste, não contas de produção.' });
+        }
+        return res.status(502).json({ error: `Google recusou a conexão: ${response.statusText}` });
       }
 
       const data = await safeJson(response);
       const resourceNames = data.resourceNames || [];
+      const accessibleIds = resourceNames.map(r => r.replace('customers/', ''));
 
-      // Passo 2: Buscar detalhes (Nome e se é MCC) para cada conta encontrada
-      // Fazemos isso em paralelo para ser rápido
-      const detailedCustomers = await Promise.all(resourceNames.map(async (resourceName) => {
-        const id = resourceName.replace('customers/', '');
-        
-        try {
-            // Query para pegar o nome da conta e se é gerente
-            const queryUrl = `${BASE_URL}/customers/${id}/googleAds:search`;
-            const query = `SELECT customer.id, customer.descriptive_name, customer.manager, customer.status FROM customer LIMIT 1`;
-            
-            const detailResponse = await fetch(queryUrl, {
-                method: 'POST',
-                headers: {
+      console.log(`Encontradas ${accessibleIds.length} contas raiz. Expandindo hierarquia...`);
+
+      // ARRAY PARA ARMAZENAR TODAS AS CONTAS (MCCs + CLIENTES FINAIS)
+      let allAccounts = [];
+
+      // Função para buscar sub-contas de uma MCC
+      const fetchSubAccounts = async (managerId) => {
+          const query = `
+            SELECT 
+                customer_client.client_customer, 
+                customer_client.descriptive_name, 
+                customer_client.manager, 
+                customer_client.status,
+                customer_client.currency_code,
+                customer_client.time_zone
+            FROM customer_client 
+            WHERE customer_client.status = 'ENABLED'
+          `;
+
+          const searchUrl = `${BASE_URL}/customers/${managerId}/googleAds:search`;
+          
+          try {
+              const res = await fetch(searchUrl, {
+                  method: 'POST',
+                  headers: {
+                      'Authorization': `Bearer ${access_token}`,
+                      'developer-token': developer_token,
+                      'login-customer-id': managerId, // Importante: Logar como a MCC
+                      'Content-Type': 'application/json',
+                  },
+                  body: JSON.stringify({ query })
+              });
+
+              if (res.ok) {
+                  const json = await res.json();
+                  return (json.results || []).map(row => {
+                      const client = row.customerClient;
+                      return {
+                          id: client.clientCustomer.replace('customers/', ''),
+                          name: client.clientCustomer,
+                          descriptiveName: client.descriptiveName || `Conta ${client.clientCustomer}`,
+                          isManager: client.manager || false,
+                          status: client.status,
+                          currencyCode: client.currencyCode || 'BRL',
+                          timeZone: client.timeZone || 'America/Sao_Paulo',
+                          parentMcc: managerId // Referência útil
+                      };
+                  });
+              }
+          } catch (e) {
+              console.warn(`Erro ao expandir MCC ${managerId}:`, e.message);
+          }
+          return [];
+      };
+
+      // Itera sobre as contas acessíveis diretamente (geralmente MCCs)
+      for (const rootId of accessibleIds) {
+          // Adiciona a própria MCC à lista (caso queira ver dados dela)
+          // Mas primeiro precisamos dos detalhes dela
+          try {
+             const selfQuery = `SELECT customer.id, customer.descriptive_name, customer.manager FROM customer LIMIT 1`;
+             const selfRes = await fetch(`${BASE_URL}/customers/${rootId}/googleAds:search`, {
+                 method: 'POST',
+                 headers: {
                     'Authorization': `Bearer ${access_token}`,
                     'developer-token': developer_token,
                     'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({ query })
-            });
+                 },
+                 body: JSON.stringify({ query: selfQuery })
+             });
+             
+             if (selfRes.ok) {
+                 const selfJson = await selfRes.json();
+                 const info = selfJson.results?.[0]?.customer;
+                 if (info) {
+                     allAccounts.push({
+                         id: String(info.id),
+                         name: `customers/${info.id}`,
+                         descriptiveName: info.descriptiveName || `MCC Raiz ${info.id}`,
+                         isManager: info.manager || false,
+                         currencyCode: 'BRL',
+                         timeZone: 'America/Sao_Paulo'
+                     });
 
-            if (detailResponse.ok) {
-                const detailData = await detailResponse.json();
-                const info = detailData.results?.[0]?.customer;
-                
-                if (info) {
-                    return {
-                        id: info.id,
-                        name: resourceName,
-                        descriptiveName: info.descriptiveName || `Conta ${info.id}`,
-                        isManager: info.manager || false,
-                        status: info.status,
-                        currencyCode: 'BRL',
-                        timeZone: 'America/Sao_Paulo'
-                    };
-                }
-            }
-        } catch (e) {
-            console.warn(`Erro ao buscar detalhes da conta ${id}:`, e.message);
-        }
+                     // SE FOR MCC, BUSCA OS FILHOS
+                     if (info.manager) {
+                         const subAccounts = await fetchSubAccounts(String(info.id));
+                         allAccounts = [...allAccounts, ...subAccounts];
+                     }
+                 }
+             }
+          } catch (e) {
+              console.warn(`Erro ao processar conta raiz ${rootId}`, e);
+          }
+      }
 
-        // Fallback se a query falhar
-        return {
-            id: id,
-            name: resourceName,
-            descriptiveName: `Conta ${id} (Sem detalhes)`,
-            isManager: false,
-            currencyCode: 'BRL',
-            timeZone: 'America/Sao_Paulo'
-        };
-      }));
+      // Remove duplicatas (caso uma conta apareça em múltiplas MCCs)
+      const uniqueAccounts = Array.from(new Map(allAccounts.map(item => [item.id, item])).values());
 
-      // Filtra contas canceladas/fechadas se desejar, ou retorna todas
-      // Ordena: MCCs primeiro, depois alfabético
-      const sortedCustomers = detailedCustomers.sort((a, b) => {
+      // Ordena: Clientes primeiro, MCCs por último (para facilitar seleção)
+      const sortedCustomers = uniqueAccounts.sort((a, b) => {
           if (a.isManager === b.isManager) return a.descriptiveName.localeCompare(b.descriptiveName);
-          return a.isManager ? -1 : 1;
+          return a.isManager ? 1 : -1; // MCCs no final da lista
       });
 
       return res.json({ customers: sortedCustomers });
@@ -169,28 +220,78 @@ app.post('/api/google-ads', async (req, res) => {
       }
       query += ` LIMIT 50`;
 
-      // IMPORTANTE: Se a conta selecionada for MCC, precisamos passar o login-customer-id no header?
-      // Geralmente, para ler métricas, devemos selecionar a conta FILHA, não a MCC.
-      // A query vai falhar se tentarmos ler métricas de campanha diretamente na MCC root.
-      // O frontend deve garantir que o usuário selecione uma conta de anúncio real, não a MCC.
+      // Helper para fazer a requisição, aceitando loginCustomerId opcional
+      const fetchCampaigns = async (loginCustomerId = null) => {
+         const headers = {
+            'Authorization': `Bearer ${access_token}`,
+            'developer-token': developer_token,
+            'Content-Type': 'application/json'
+         };
+         if (loginCustomerId) {
+            headers['login-customer-id'] = loginCustomerId;
+         }
+         
+         return fetch(url, {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({ query })
+         });
+      };
 
-      const response = await fetch(url, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${access_token}`,
-          'developer-token': developer_token,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({ query })
-      });
+      // TENTATIVA 1: Acesso Direto
+      let response = await fetchCampaigns();
+      
+      // SMART MCC RETRY: Se falhar com erro de permissão, tentamos encontrar uma MCC acessível
+      if (!response.ok) {
+         const errText = await response.text();
+         
+         // Se o erro indicar falta de acesso direto, e temos um usuário de agência (MCC)
+         if (errText.includes("NOT_ADS_USER") || errText.includes("AuthorizationError.USER_PERMISSION_DENIED")) {
+            console.log(`Acesso direto falhou para ${cleanCustomerId}. Tentando via MCCs acessíveis...`);
+            
+            // Busca lista de clientes acessíveis para encontrar MCCs
+            const listUrl = `${BASE_URL}/customers:listAccessibleCustomers`;
+            const listRes = await fetch(listUrl, {
+                method: 'GET',
+                headers: {
+                    'Authorization': `Bearer ${access_token}`,
+                    'developer-token': developer_token,
+                    'Content-Type': 'application/json',
+                }
+            });
+            
+            if (listRes.ok) {
+                const listData = await listRes.json();
+                const possibleMccs = (listData.resourceNames || []).map(rn => rn.replace('customers/', ''));
+                
+                // Tenta cada MCC encontrada como login-customer-id (limite de 3 para não demorar demais)
+                for (const mccId of possibleMccs.slice(0, 3)) {
+                    // Não usa a própria conta alvo como MCC
+                    if (mccId === cleanCustomerId) continue;
+
+                    console.log(`Tentando acesso via MCC: ${mccId}`);
+                    const mccResponse = await fetchCampaigns(mccId);
+                    if (mccResponse.ok) {
+                        response = mccResponse; // Sucesso! Substitui a resposta original
+                        break;
+                    }
+                }
+            }
+         } else {
+             // Se não for erro de permissão (ex: erro de servidor), retorna o erro original
+             console.error('Google Ads Query Erro (Fatal):', errText);
+             return res.status(502).json({ error: `Erro na consulta Google Ads: ${errText}` });
+         }
+      }
 
       if (!response.ok) {
-        const errText = await response.text();
-        console.error('Google Ads Query Erro:', errText);
-        if (errText.includes("CUSTOMER_NOT_FOUND") || errText.includes("NOT_ADS_USER")) {
-            return res.json({ results: [] }); 
+        // Se ainda assim falhou após retry
+        const finalErr = await response.text();
+        console.error('Todas as tentativas falharam:', finalErr);
+        if (finalErr.includes("CUSTOMER_NOT_FOUND")) {
+             return res.json({ results: [] }); 
         }
-        return res.status(502).json({ error: `Erro na consulta Google Ads: ${errText}` });
+        return res.status(502).json({ error: `Não foi possível acessar a conta. Verifique se o ID está correto e se você tem permissão.` });
       }
 
       const data = await safeJson(response);
@@ -201,7 +302,6 @@ app.post('/api/google-ads', async (req, res) => {
 
   } catch (error) {
     console.error('SERVER INTERNAL ERROR:', error);
-    // IMPORTANTE: Retornar JSON mesmo no catch para evitar "Unexpected end of JSON input"
     res.status(500).json({ error: `Erro Interno do Servidor: ${error.message}` });
   }
 });

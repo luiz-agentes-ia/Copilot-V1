@@ -171,7 +171,6 @@ create policy "Users can view metrics" on ad_metrics for select using (
     exists (select 1 from ad_campaigns where ad_campaigns.id = ad_metrics.campaign_id and ad_campaigns.user_id = auth.uid())
 );
 
-
 -- ==========================================
 -- 7. ATIVAR REALTIME (Obrigatório para o App funcionar ao vivo)
 -- ==========================================
