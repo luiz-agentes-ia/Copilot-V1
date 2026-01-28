@@ -23,6 +23,18 @@ export default defineConfig(({ mode }) => {
     },
     build: {
       outDir: 'dist',
+      // Otimização para performance e correção do aviso de "chunks > 500kb"
+      chunkSizeWarningLimit: 1600,
+      rollupOptions: {
+        output: {
+          manualChunks: {
+            // Separa bibliotecas comuns em um arquivo de cache separado
+            vendor: ['react', 'react-dom', 'recharts', 'lucide-react', '@supabase/supabase-js'],
+            // Separa a biblioteca do WhatsApp (que é pesada)
+            whatsapp: ['@whiskeysockets/baileys'] 
+          }
+        }
+      }
     }
   }
 })
