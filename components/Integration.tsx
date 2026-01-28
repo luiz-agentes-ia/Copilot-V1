@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect } from 'react';
 import { 
   CheckCircle2, Calendar, Zap, Loader2, LogOut, Copy, Terminal,
@@ -54,24 +55,45 @@ const Integration: React.FC = () => {
   useEffect(() => {
       const loadSavedInstance = async () => {
           if (!user) return;
+          
           try {
-              const { data, error } = await supabase.from('whatsapp_instances').select('*').eq('user_id', user.id).maybeSingle();
+              // Adicionei um tratamento específico para ignorar o 404 se a tabela não existir
+              // O maybeSingle() evita erros se voltar vazio, mas se a tabela não existir, o catch pega.
+              const { data, error } = await supabase
+                .from('whatsapp_instances')
+                .select('*')
+                .eq('user_id', user.id)
+                .maybeSingle();
+
               if (error) {
-                  // Silently fail if table doesn't exist yet (user needs to run SQL)
+                  // Se for erro de conexão ou tabela faltando, apenas logamos discretamente e assumimos desconectado
+                  console.warn("Status WhatsApp: Tabela não encontrada ou erro de permissão (RLS). Assumindo desconectado.");
                   return;
               }
+
               if (data) {
-                  const status = await checkStatus(data.instance_name);
-                  if (status.status === 'CONNECTED') {
-                      setWhatsappConfig({ instanceName: data.instance_name, isConnected: true, apiKey: '', baseUrl: '' });
-                      setWppStatus('CONNECTED');
-                  } else {
-                      setWhatsappConfig({ instanceName: data.instance_name, isConnected: false, apiKey: '', baseUrl: '' });
-                      setWppStatus('DISCONNECTED');
+                  // Se encontrou dados no banco, checa se está online na Evolution
+                  try {
+                      const status = await checkStatus(data.instance_name);
+                      if (status.status === 'CONNECTED') {
+                          setWhatsappConfig({ instanceName: data.instance_name, isConnected: true, apiKey: '', baseUrl: '' });
+                          setWppStatus('CONNECTED');
+                      } else {
+                          // Existe no banco mas tá offline na API
+                          setWhatsappConfig({ instanceName: data.instance_name, isConnected: false, apiKey: '', baseUrl: '' });
+                          setWppStatus('DISCONNECTED');
+                      }
+                  } catch (apiError) {
+                      console.warn("Erro ao checar status na Evolution:", apiError);
+                      // Mantém estado do banco mas marca como erro visualmente se necessário
                   }
               }
-          } catch (e) { console.error(e); }
+          } catch (e) { 
+             // Catch global para evitar crash da tela
+             console.error("Erro crítico ao carregar WhatsApp:", e); 
+          }
       };
+      
       loadSavedInstance();
   }, [user]);
 
@@ -117,7 +139,7 @@ const Integration: React.FC = () => {
       }
   };
 
-  // --- SHEETS LOGIC (RESTAURADA) ---
+  // --- SHEETS LOGIC ---
   useEffect(() => {
     if (googleSheetsToken) {
         setImportLoading(true);
@@ -285,7 +307,24 @@ const Integration: React.FC = () => {
             )}
         </div>
 
-        {/* SHEETS CARD (RESTORED) */}
+        {/* GOOGLE CALENDAR (RESTAURADO) */}
+        <div className={`bg-white p-6 rounded-3xl border shadow-sm flex flex-col group transition-all ${googleCalendarToken ? 'border-emerald-100 ring-1 ring-emerald-50' : 'border-slate-200 hover:border-navy'}`}>
+            <div className="flex justify-between items-start mb-4">
+              <div className="p-3 bg-slate-50 rounded-2xl group-hover:bg-navy group-hover:text-white transition-colors"><Calendar className="text-amber-500" /></div>
+              {googleCalendarToken ? <span className="flex items-center gap-1 text-[9px] font-black text-emerald-600 bg-emerald-50 px-2 py-1 rounded-full uppercase border border-emerald-100"><CheckCircle2 size={10} /> Ativo</span> : <span className="text-[9px] font-black text-slate-300 bg-slate-50 px-2 py-1 rounded-full uppercase border border-slate-100">Inativo</span>}
+            </div>
+            <h3 className="font-black text-navy text-sm uppercase tracking-widest">Google Agenda</h3>
+            <p className="text-[10px] text-slate-400 mt-1 mb-4 h-8">Sincronize sua agenda médica.</p>
+            {googleCalendarToken ? (
+               <div className="mt-auto"><button onClick={handleCalendarLogout} className="w-full py-2 flex items-center justify-center gap-2 text-[10px] font-black uppercase text-rose-400 hover:text-rose-600 hover:bg-rose-50 rounded-xl transition-all"><LogOut size={12} /> Desconectar</button></div>
+            ) : (
+              <button onClick={handleCalendarLogin} disabled={!!loading} className={`mt-auto w-full py-3 rounded-xl font-black text-[10px] uppercase tracking-widest transition-all flex items-center justify-center gap-2 ${loading === 'calendar' ? 'bg-slate-100 text-slate-400' : 'bg-navy text-white hover:bg-slate-800 shadow-lg shadow-navy/20'}`}>
+                {loading === 'calendar' ? <Loader2 size={14} className="animate-spin" /> : 'Conectar Agora'}
+              </button>
+            )}
+        </div>
+
+        {/* SHEETS CARD */}
         <div className={`bg-white p-6 rounded-3xl border shadow-sm flex flex-col group transition-all ${googleSheetsToken ? 'border-emerald-100 ring-1 ring-emerald-50 col-span-1 md:col-span-2' : 'border-slate-200 hover:border-navy'}`}>
             <div className="flex justify-between items-start mb-4">
               <div className="p-3 bg-slate-50 rounded-2xl group-hover:bg-navy group-hover:text-white transition-colors"><FileSpreadsheet className="text-emerald-500" /></div>
