@@ -51,12 +51,24 @@ const getMessageContent = (msg) => {
 const startWhatsAppSession = async (userId) => {
     const sessionPath = getSessionPath(userId);
     
+    // Cria diretório se não existir
     if (!fs.existsSync(sessionPath)) {
         fs.mkdirSync(sessionPath, { recursive: true });
     }
 
     const { state, saveCreds } = await useMultiFileAuthState(sessionPath);
     
+    // CRITICAL FIX: Inicializa o objeto de sessão no Map ANTES de iniciar o socket
+    // Isso garante que os eventos 'connection.update' tenham onde salvar o QR Code
+    if (!sessions.has(userId)) {
+        sessions.set(userId, { 
+            sock: null, 
+            qrCode: null, 
+            status: 'connecting', 
+            reconnectAttempts: 0 
+        });
+    }
+
     const sock = makeWASocket.default({
         auth: state,
         printQRInTerminal: true,
@@ -69,12 +81,9 @@ const startWhatsAppSession = async (userId) => {
         retryRequestDelayMs: 250
     });
 
-    sessions.set(userId, { 
-        sock, 
-        qrCode: null, 
-        status: 'connecting', 
-        reconnectAttempts: 0 
-    });
+    // Atualiza o socket na sessão existente
+    const session = sessions.get(userId);
+    session.sock = sock;
 
     sock.ev.on('creds.update', saveCreds);
 
@@ -89,7 +98,7 @@ const startWhatsAppSession = async (userId) => {
                     const phone = msg.key.remoteJid.replace('@s.whatsapp.net', '');
                     const textBody = getMessageContent(msg);
                     
-                    if (!textBody) continue; // Ignora mensagens vazias ou tipos complexos não tratados ainda
+                    if (!textBody) continue; // Ignora mensagens vazias
 
                     // 1. Busca ou Cria o Lead
                     let leadId = null;
@@ -108,11 +117,11 @@ const startWhatsAppSession = async (userId) => {
                             status: isFromMe ? undefined : 'Conversa' // Se cliente mandou, muda status
                         }).eq('id', leadId);
                     } else {
-                        // Novo Lead (apenas se for mensagem recebida, opcional)
+                        // Novo Lead (apenas se for mensagem recebida)
                         if (!isFromMe) {
                             const { data: newLead } = await supabase.from('leads').insert({
                                 user_id: userId,
-                                name: msg.pushName || phone, // Tenta pegar nome do Whats ou usa fone
+                                name: msg.pushName || phone, 
                                 phone: phone,
                                 status: 'Novo',
                                 temperature: 'Cold',
@@ -135,8 +144,6 @@ const startWhatsAppSession = async (userId) => {
                         status: 'delivered'
                     });
 
-                    console.log(`[WPP ${userId}] Msg salva: ${isFromMe ? 'Eu' : 'Cliente'} -> ${phone}`);
-
                 } catch (err) {
                     console.error('Erro ao processar mensagem:', err);
                 }
@@ -146,43 +153,46 @@ const startWhatsAppSession = async (userId) => {
 
     sock.ev.on('connection.update', async (update) => {
         const { connection, lastDisconnect, qr } = update;
-        const session = sessions.get(userId);
+        
+        // Recupera a sessão atualizada do Map
+        const currentSession = sessions.get(userId);
 
-        if (qr) {
+        if (qr && currentSession) {
             console.log(`[WPP ${userId}] QR Code gerado!`);
             try {
                 const qrBase64 = await QRCode.toDataURL(qr);
-                if (session) {
-                    session.qrCode = qrBase64;
-                    session.status = 'qrcode';
-                }
+                currentSession.qrCode = qrBase64;
+                currentSession.status = 'qrcode';
+                
                 await supabase.from('whatsapp_instances')
                     .upsert({ user_id: userId, instance_name: `native_${userId}`, status: 'qrcode' }, { onConflict: 'user_id' });
-            } catch (err) {}
+            } catch (err) {
+                console.error("Erro ao gerar QR Base64:", err);
+            }
         }
 
-        if (connection === 'open') {
+        if (connection === 'open' && currentSession) {
             console.log(`[WPP ${userId}] CONEXÃO ESTABELECIDA!`);
-            if (session) {
-                session.status = 'connected';
-                session.qrCode = null;
-                session.reconnectAttempts = 0;
-            }
+            currentSession.status = 'connected';
+            currentSession.qrCode = null;
+            currentSession.reconnectAttempts = 0;
+            
             await supabase.from('whatsapp_instances')
                 .upsert({ user_id: userId, instance_name: `native_${userId}`, status: 'connected' }, { onConflict: 'user_id' });
         }
 
-        if (connection === 'close') {
+        if (connection === 'close' && currentSession) {
             const shouldReconnect = (lastDisconnect?.error)?.output?.statusCode !== DisconnectReason.loggedOut;
             console.log(`[WPP ${userId}] Conexão fechada. Reconectar? ${shouldReconnect}`);
             
             if (shouldReconnect) {
-                if (session) session.status = 'reconnecting';
+                currentSession.status = 'reconnecting';
+                // Delay incremental simples para evitar loop rápido
                 await delay(2000); 
                 startWhatsAppSession(userId);
             } else {
-                console.log(`[WPP ${userId}] Desconectado.`);
-                if (session) session.status = 'disconnected';
+                console.log(`[WPP ${userId}] Desconectado (Logout).`);
+                currentSession.status = 'disconnected';
                 sessions.delete(userId);
                 try { fs.rmSync(sessionPath, { recursive: true, force: true }); } catch(e) {}
                 
@@ -195,30 +205,46 @@ const startWhatsAppSession = async (userId) => {
     return sock;
 };
 
-// ... (Resto das rotas mantidas: /init, /status, /send, /logout, etc) ...
+// ... ENDPOINTS ...
 
 app.post('/api/whatsapp/init', async (req, res) => {
     const { userId } = req.body;
     if (!userId) return res.status(400).json({ error: 'User ID required' });
 
+    console.log(`[WPP INIT] Solicitado para user: ${userId}`);
+
     const existingSession = sessions.get(userId);
+    
+    // Se já existe e está conectado
     if (existingSession && existingSession.status === 'connected') {
         return res.json({ state: 'open', instanceName: `native_${userId}` });
     }
-    if (existingSession && (existingSession.status === 'connecting' || existingSession.status === 'qrcode')) {
-         return res.json({ state: 'connecting', base64: existingSession.qrCode, instanceName: `native_${userId}` });
+    
+    // Se já existe e tem QR code ou está conectando, retorna o estado atual imediatamente
+    if (existingSession) {
+         return res.json({ 
+             state: existingSession.status, 
+             base64: existingSession.qrCode, 
+             instanceName: `native_${userId}` 
+         });
     }
 
     try {
-        await startWhatsAppSession(userId);
-        await delay(1500);
+        // Inicia nova sessão
+        startWhatsAppSession(userId);
+        
+        // Aguarda um pequeno delay para dar tempo do QR code ser gerado na primeira tentativa
+        // Isso melhora a UX para não retornar null logo de cara
+        await delay(2000); 
+        
         const newSession = sessions.get(userId);
         res.json({
-            state: newSession?.status === 'connected' ? 'open' : 'connecting',
+            state: newSession?.status || 'connecting',
             base64: newSession?.qrCode,
             instanceName: `native_${userId}`
         });
     } catch (e) {
+        console.error("Erro no init:", e);
         res.status(500).json({ error: 'Falha ao iniciar driver do WhatsApp' });
     }
 });
@@ -226,11 +252,14 @@ app.post('/api/whatsapp/init', async (req, res) => {
 app.post('/api/whatsapp/status', async (req, res) => {
     const { instanceName } = req.body; 
     const userId = instanceName ? instanceName.replace('native_', '') : null;
+    
     if (!userId) return res.status(400).json({ error: 'Invalid instance name' });
+    
     const session = sessions.get(userId);
     if (!session) return res.json({ instance: { state: 'disconnected' } });
+    
     res.json({
-        instance: { state: session.status === 'connected' ? 'open' : 'connecting' },
+        instance: { state: session.status === 'connected' ? 'open' : session.status },
         base64: session.qrCode
     });
 });
@@ -239,11 +268,14 @@ app.post('/api/whatsapp/send', async (req, res) => {
     const { instanceName, number, text } = req.body;
     const userId = instanceName.replace('native_', '');
     const session = sessions.get(userId);
-    if (!session || session.status !== 'connected') return res.status(400).json({ error: 'WhatsApp desconectado' });
+    
+    if (!session || session.status !== 'connected') {
+        return res.status(400).json({ error: 'WhatsApp desconectado' });
+    }
+    
     try {
         const jid = number + '@s.whatsapp.net';
         await session.sock.sendMessage(jid, { text: text });
-        // O listener 'upsert' vai capturar essa msg enviada e salvar no banco automaticamente
         res.json({ status: 'sent' });
     } catch (e) {
         res.status(500).json({ error: 'Falha no envio' });
@@ -263,24 +295,50 @@ app.post('/api/whatsapp/logout', async (req, res) => {
     res.json({ success: true });
 });
 
+// PROXY GOOGLE ADS (Mantido e revisado)
 app.post('/api/google-ads', async (req, res) => {
     try {
-        const { action, access_token, customer_id } = req.body;
+        const { action, access_token, customer_id, date_range } = req.body;
         const developer_token = GOOGLE_ADS_DEV_TOKEN;
+        
+        // Proxy logic here... (reutilizando o código existente no backend local ou Supabase Edge Functions)
+        // Para simplificar neste arquivo único, assumimos que as Edge Functions do Supabase
+        // fazem o trabalho pesado, mas se estiver rodando local, o proxy deve ser completo.
+        // A lógica completa está no arquivo `supabase/functions/google-ads-proxy/index.ts`
+        // Aqui apenas repassamos se necessário ou mantemos a lógica simples para teste.
+        
+        // Se estiver rodando como servidor completo (não serverless), implemente a chamada aqui:
         const API_VERSION = 'v16';
         const BASE_URL = `https://googleads.googleapis.com/${API_VERSION}`;
-        const headers = { 'Authorization': `Bearer ${access_token}`, 'developer-token': developer_token, 'Content-Type': 'application/json' };
+        const headers = { 
+            'Authorization': `Bearer ${access_token}`, 
+            'developer-token': developer_token, 
+            'Content-Type': 'application/json' 
+        };
 
         if (action === 'list_customers') {
              const gRes = await fetch(`${BASE_URL}/customers:listAccessibleCustomers`, { headers });
              const gData = await safeJson(gRes);
-             const customers = (gData.resourceNames || []).map(r => ({ id: r.replace('customers/', ''), name: r, descriptiveName: `Conta ${r.replace('customers/', '')}`, currencyCode: 'BRL' }));
+             const customers = (gData.resourceNames || []).map(r => {
+                 const id = r.replace('customers/', '');
+                 return { id: id, name: r, descriptiveName: `Conta ${id}`, currencyCode: 'BRL' };
+             });
              return res.json({ customers });
         }
+        
         if (action === 'get_campaigns') {
             const cleanId = customer_id.replace(/-/g, '');
-            const query = `SELECT campaign.id, campaign.name, campaign.status, metrics.clicks, metrics.impressions, metrics.cost_micros, metrics.conversions FROM campaign WHERE campaign.status != 'REMOVED' LIMIT 50`;
-            const gRes = await fetch(`${BASE_URL}/customers/${cleanId}/googleAds:search`, { method: 'POST', headers, body: JSON.stringify({ query }) });
+            let query = `SELECT campaign.id, campaign.name, campaign.status, metrics.clicks, metrics.impressions, metrics.cost_micros, metrics.conversions FROM campaign WHERE campaign.status != 'REMOVED'`;
+             if (date_range && date_range.start && date_range.end) {
+                query += ` AND segments.date BETWEEN '${date_range.start}' AND '${date_range.end}'`;
+            }
+            query += ` LIMIT 50`;
+            
+            const gRes = await fetch(`${BASE_URL}/customers/${cleanId}/googleAds:search`, { 
+                method: 'POST', 
+                headers, 
+                body: JSON.stringify({ query }) 
+            });
             const gData = await safeJson(gRes);
             return res.json({ results: gData.results || [] });
         }
@@ -298,5 +356,5 @@ app.get('*', (req, res) => res.sendFile(path.join(__dirname, 'dist', 'index.html
 
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
-  console.log(`WhatsApp Engine: Native Baileys`);
+  console.log(`WhatsApp Engine: Native Baileys (Robust Session Handling)`);
 });

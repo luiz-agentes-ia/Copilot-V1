@@ -2,14 +2,15 @@
 import React, { useState, useEffect } from 'react';
 import { 
   CheckCircle2, Calendar, Loader2, LogOut, MessageCircle, Smartphone, 
-  FileSpreadsheet, Activity, AlertCircle, Upload, RefreshCw
+  FileSpreadsheet, Activity, AlertCircle, Upload, RefreshCw, X, ChevronRight, LayoutList
 } from 'lucide-react';
 import { useApp } from '../App';
-import { signInWithGoogleAds } from '../services/googleAdsService';
+import { signInWithGoogleAds, getAccessibleCustomers } from '../services/googleAdsService';
 import { signInWithGoogleCalendar } from '../services/googleCalendarService';
 import { signInWithGoogleSheets, listSpreadsheets, getSpreadsheetDetails, getSheetData } from '../services/googleSheetsService';
 import { initInstance, checkStatus, logoutInstance } from '../services/whatsappService';
 import { supabase } from '../lib/supabase';
+import { GoogleAdAccount } from '../types';
 
 // Ícone do Google
 const GoogleIcon = ({ size = 20 }: { size?: number }) => (
@@ -44,6 +45,12 @@ const Integration: React.FC = () => {
   const [importStatus, setImportStatus] = useState<string>('');
   const [importLoading, setImportLoading] = useState(false);
 
+  // Google Ads Account Selector States
+  const [adAccounts, setAdAccounts] = useState<GoogleAdAccount[]>([]);
+  const [showAdAccountModal, setShowAdAccountModal] = useState(false);
+  const [selectedAdAccount, setSelectedAdAccount] = useState<string | null>(localStorage.getItem('selected_google_account_id'));
+  const [isLoadingAccounts, setIsLoadingAccounts] = useState(false);
+
   // Sincroniza estado local com Global/Persistido
   useEffect(() => {
      if (whatsappConfig?.isConnected) {
@@ -52,6 +59,54 @@ const Integration: React.FC = () => {
      }
   }, [whatsappConfig]);
 
+  // --- GOOGLE ADS ACCOUNT FETCHING ---
+  useEffect(() => {
+    if (googleAdsToken && !selectedAdAccount) {
+        setIsLoadingAccounts(true);
+        // Busca contas disponíveis (MCC ou diretas)
+        getAccessibleCustomers(googleAdsToken)
+            .then(accounts => {
+                setAdAccounts(accounts);
+                // Se só tiver uma conta, seleciona automaticamente
+                if (accounts.length === 1) {
+                    handleSelectAdAccount(accounts[0].id);
+                } else {
+                    setShowAdAccountModal(true);
+                }
+            })
+            .catch(err => {
+                console.error("Erro ao buscar contas Google Ads:", err);
+                alert("Erro ao listar contas de anúncio. Verifique se o token é válido.");
+            })
+            .finally(() => setIsLoadingAccounts(false));
+    }
+  }, [googleAdsToken, selectedAdAccount]);
+
+  const handleSelectAdAccount = (accountId: string) => {
+      localStorage.setItem('selected_google_account_id', accountId);
+      setSelectedAdAccount(accountId);
+      setShowAdAccountModal(false);
+      // Opcional: Recarregar a página ou atualizar contexto para refletir a mudança no Marketing.tsx
+      window.location.reload(); 
+  };
+
+  const handleChangeAdAccount = async () => {
+      if (googleAdsToken) {
+          setIsLoadingAccounts(true);
+          setShowAdAccountModal(true);
+          try {
+              const accounts = await getAccessibleCustomers(googleAdsToken);
+              setAdAccounts(accounts);
+          } catch (e) {
+              console.error(e);
+          } finally {
+              setIsLoadingAccounts(false);
+          }
+      }
+  };
+
+
+  // --- WHATSAPP LOGIC ---
   const handleWppConnect = async () => {
     if (!user) return;
     setWppStatus('CONNECTING');
@@ -77,8 +132,7 @@ const Integration: React.FC = () => {
 
   const startStatusPolling = (instanceName: string) => {
       let attempts = 0;
-      // Timeout aumentado para 3 minutos (90 tentativas de 2s)
-      const maxAttempts = 90; 
+      const maxAttempts = 90; // 3 minutos
 
       const interval = setInterval(async () => {
            attempts++;
@@ -86,8 +140,8 @@ const Integration: React.FC = () => {
                const check = await checkStatus(instanceName);
                
                if (check.status === 'ERROR') {
-                   // Se falhar a rede 3x seguidas, paramos
-                   if (attempts % 5 === 0) console.warn("Erro de rede no polling, tentando reconectar...");
+                   // Ignora erros de rede temporários
+                   if (attempts % 5 === 0) console.warn("Polling retry...");
                } else {
                    // Backend atualizou o QR Code?
                    if (check.base64 && check.state !== 'open') {
@@ -95,7 +149,7 @@ const Integration: React.FC = () => {
                        setWppStatus('QRCODE');
                    }
 
-                   if (check.status === 'CONNECTED') {
+                   if (check.status === 'CONNECTED' || check.state === 'open') {
                        clearInterval(interval);
                        setWppStatus('CONNECTED');
                        setWppQr(null);
@@ -107,8 +161,8 @@ const Integration: React.FC = () => {
            if (attempts >= maxAttempts) {
               clearInterval(interval);
               if (wppStatus !== 'CONNECTED') {
-                  setWppStatus('IDLE'); // Volta para IDLE para permitir novo clique
-                  setWppError('Tempo limite excedido. O servidor demorou para responder.');
+                  setWppStatus('IDLE');
+                  setWppError('Tempo limite excedido. Tente gerar o QR Code novamente.');
               }
            }
       }, 2000); 
@@ -195,7 +249,7 @@ const Integration: React.FC = () => {
 
   // --- GOOGLE AUTH HANDLERS ---
   const handleGoogleLogin = async () => { setLoading('google-ads'); try { await signInWithGoogleAds(); } catch (error: any) { alert("Erro: " + error.message); setLoading(null); } };
-  const handleGoogleLogout = async () => { await supabase.auth.signOut(); localStorage.removeItem('google_ads_token'); setGoogleAdsToken(null); window.location.reload(); };
+  const handleGoogleLogout = async () => { await supabase.auth.signOut(); localStorage.removeItem('google_ads_token'); localStorage.removeItem('selected_google_account_id'); setGoogleAdsToken(null); setSelectedAdAccount(null); window.location.reload(); };
   
   const handleCalendarLogin = async () => { setLoading('calendar'); try { await signInWithGoogleCalendar(); } catch (e: any) { alert(e.message); setLoading(null); } };
   const handleCalendarLogout = () => { localStorage.removeItem('google_calendar_token'); setGoogleCalendarToken(null); window.location.reload(); };
@@ -204,7 +258,7 @@ const Integration: React.FC = () => {
   const handleSheetsLogout = () => { localStorage.removeItem('google_sheets_token'); setGoogleSheetsToken(null); setSpreadsheets([]); setSelectedSpreadsheet(null); window.location.reload(); };
 
   return (
-    <div className="space-y-8 pb-20">
+    <div className="space-y-8 pb-20 relative">
       <header className="flex justify-between items-end">
         <div>
             <h2 className="text-2xl font-bold text-navy">Central de Conexões</h2>
@@ -218,7 +272,7 @@ const Integration: React.FC = () => {
       {/* DASHBOARD DE STATUS */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4 animate-in fade-in duration-500">
         {[
-            { id: 'google-ads', label: 'Google Ads', active: !!googleAdsToken, icon: <GoogleIcon size={18} /> },
+            { id: 'google-ads', label: 'Google Ads', active: !!googleAdsToken && !!selectedAdAccount, icon: <GoogleIcon size={18} /> },
             { id: 'calendar', label: 'G. Calendar', active: !!googleCalendarToken, icon: <Calendar size={18} className={!!googleCalendarToken ? 'text-amber-500' : ''} /> },
             { id: 'sheets', label: 'G. Sheets', active: !!googleSheetsToken, icon: <FileSpreadsheet size={18} className={!!googleSheetsToken ? 'text-emerald-500' : ''} /> },
             { id: 'wpp', label: 'WhatsApp', active: !!whatsappConfig?.isConnected, icon: <MessageCircle size={18} className={!!whatsappConfig?.isConnected ? 'text-emerald-500' : ''} /> },
@@ -256,7 +310,7 @@ const Integration: React.FC = () => {
             {whatsappConfig?.isConnected ? (
                <div className="mt-auto space-y-3">
                    <div className="p-3 bg-emerald-50 border border-emerald-100 rounded-xl">
-                      <p className="text-[10px] font-bold text-emerald-800 flex items-center gap-2"><Smartphone size={12}/> Online</p>
+                      <p className="text-[10px] font-bold text-emerald-800 flex items-center gap-2"><Smartphone size={12}/> Online: {whatsappConfig.instanceName}</p>
                    </div>
                    <button onClick={handleWppDisconnect} className="w-full py-2 flex items-center justify-center gap-2 text-[10px] font-black uppercase text-rose-400 hover:text-rose-600 hover:bg-rose-50 rounded-xl transition-all"><LogOut size={12} /> Desconectar</button>
                </div>
@@ -296,7 +350,42 @@ const Integration: React.FC = () => {
             )}
         </div>
         
-        {/* Outros cards permanecem iguais... */}
+        {/* GOOGLE ADS CARD */}
+        <div className={`bg-white p-6 rounded-3xl border shadow-sm flex flex-col group transition-all ${googleAdsToken && selectedAdAccount ? 'border-emerald-100 ring-1 ring-emerald-50 col-span-1 md:col-span-2' : 'border-slate-200 hover:border-navy'}`}>
+            <div className="flex justify-between items-start mb-4">
+              <div className="p-3 bg-slate-50 rounded-2xl group-hover:bg-navy group-hover:text-white transition-colors"><GoogleIcon size={24} /></div>
+              {googleAdsToken && selectedAdAccount ? <span className="flex items-center gap-1 text-[9px] font-black text-emerald-600 bg-emerald-50 px-2 py-1 rounded-full uppercase border border-emerald-100"><CheckCircle2 size={10} /> Ativo</span> : <span className="text-[9px] font-black text-slate-300 bg-slate-50 px-2 py-1 rounded-full uppercase border border-slate-100">Inativo</span>}
+            </div>
+            <h3 className="font-black text-navy text-sm uppercase tracking-widest">Google Ads</h3>
+            <p className="text-[10px] text-slate-400 mt-1 mb-4">Métricas de campanhas e ROI.</p>
+            
+            {googleAdsToken ? (
+               <div className="mt-auto space-y-3">
+                   {selectedAdAccount ? (
+                       <div className="p-3 bg-emerald-50 border border-emerald-100 rounded-xl flex items-center justify-between">
+                            <div>
+                                <p className="text-[10px] font-bold text-emerald-800">Conta Selecionada</p>
+                                <p className="text-[9px] text-emerald-600 font-mono">ID: {selectedAdAccount}</p>
+                            </div>
+                            <button onClick={handleChangeAdAccount} className="p-2 hover:bg-emerald-100 rounded-lg text-emerald-700" title="Trocar Conta"><RefreshCw size={12}/></button>
+                       </div>
+                   ) : (
+                       <button onClick={handleChangeAdAccount} className="w-full py-2 bg-amber-50 text-amber-600 rounded-xl text-[10px] font-bold uppercase border border-amber-100 hover:bg-amber-100 transition-colors">
+                           Selecione uma conta
+                       </button>
+                   )}
+                   <button onClick={handleGoogleLogout} className="w-full py-2 flex items-center justify-center gap-2 text-[10px] font-black uppercase text-rose-400 hover:text-rose-600 hover:bg-rose-50 rounded-xl transition-all"><LogOut size={12} /> Desconectar</button>
+               </div>
+            ) : (
+              <button onClick={handleGoogleLogin} disabled={!!loading} className={`mt-auto w-full py-3 rounded-xl font-black text-[10px] uppercase tracking-widest transition-all flex items-center justify-center gap-2 ${loading === 'google-ads' ? 'bg-slate-100 text-slate-400' : 'bg-navy text-white hover:bg-slate-800 shadow-lg shadow-navy/20'}`}>
+                {loading === 'google-ads' ? <Loader2 size={14} className="animate-spin" /> : 'Conectar Agora'}
+              </button>
+            )}
+        </div>
+
+        {/* SHEETS E CALENDAR (Mantidos como estavam) */}
+        {/* ... Os outros cards já estavam corretos no arquivo anterior e serão mantidos pela lógica de 'partial update' se não incluídos, mas como estamos retornando o arquivo inteiro: */}
+        
         {/* GOOGLE CALENDAR CARD */}
         <div className={`bg-white p-6 rounded-3xl border shadow-sm flex flex-col group transition-all ${googleCalendarToken ? 'border-emerald-100 ring-1 ring-emerald-50' : 'border-slate-200 hover:border-navy'}`}>
             <div className="flex justify-between items-start mb-4">
@@ -361,24 +450,51 @@ const Integration: React.FC = () => {
             )}
         </div>
 
-        {/* GOOGLE ADS CARD */}
-        <div className={`bg-white p-6 rounded-3xl border shadow-sm flex flex-col group transition-all ${googleAdsToken ? 'border-emerald-100 ring-1 ring-emerald-50 col-span-1 md:col-span-2' : 'border-slate-200 hover:border-navy'}`}>
-            <div className="flex justify-between items-start mb-4">
-              <div className="p-3 bg-slate-50 rounded-2xl group-hover:bg-navy group-hover:text-white transition-colors"><GoogleIcon size={24} /></div>
-              {googleAdsToken ? <span className="flex items-center gap-1 text-[9px] font-black text-emerald-600 bg-emerald-50 px-2 py-1 rounded-full uppercase border border-emerald-100"><CheckCircle2 size={10} /> Ativo</span> : <span className="text-[9px] font-black text-slate-300 bg-slate-50 px-2 py-1 rounded-full uppercase border border-slate-100">Inativo</span>}
-            </div>
-            <h3 className="font-black text-navy text-sm uppercase tracking-widest">Google Ads</h3>
-            <p className="text-[10px] text-slate-400 mt-1 mb-4">Métricas de campanhas e ROI.</p>
-            {googleAdsToken ? (
-               <div className="mt-auto"><button onClick={handleGoogleLogout} className="w-full py-2 flex items-center justify-center gap-2 text-[10px] font-black uppercase text-rose-400 hover:text-rose-600 hover:bg-rose-50 rounded-xl transition-all"><LogOut size={12} /> Desconectar</button></div>
-            ) : (
-              <button onClick={handleGoogleLogin} disabled={!!loading} className={`mt-auto w-full py-3 rounded-xl font-black text-[10px] uppercase tracking-widest transition-all flex items-center justify-center gap-2 ${loading === 'google-ads' ? 'bg-slate-100 text-slate-400' : 'bg-navy text-white hover:bg-slate-800 shadow-lg shadow-navy/20'}`}>
-                {loading === 'google-ads' ? <Loader2 size={14} className="animate-spin" /> : 'Conectar Agora'}
-              </button>
-            )}
-        </div>
-
       </div>
+
+      {/* MODAL DE SELEÇÃO DE CONTA GOOGLE ADS */}
+      {showAdAccountModal && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-navy/80 backdrop-blur-md animate-in fade-in">
+              <div className="bg-white rounded-[32px] w-full max-w-lg shadow-2xl overflow-hidden animate-in zoom-in-95">
+                  <div className="p-6 border-b border-slate-100 flex justify-between items-center bg-slate-50">
+                      <div>
+                          <h3 className="font-bold text-navy text-lg">Selecione a Conta</h3>
+                          <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest">Google Ads (MCC ou Cliente)</p>
+                      </div>
+                      <button onClick={() => setShowAdAccountModal(false)} className="p-2 hover:bg-slate-200 rounded-full text-slate-400"><X size={20}/></button>
+                  </div>
+                  <div className="p-6 max-h-[60vh] overflow-y-auto custom-scrollbar">
+                      {isLoadingAccounts ? (
+                          <div className="flex flex-col items-center py-8">
+                              <Loader2 className="animate-spin text-navy mb-2" size={32} />
+                              <p className="text-xs font-bold text-slate-400 uppercase">Carregando contas...</p>
+                          </div>
+                      ) : (
+                          <div className="space-y-2">
+                              {adAccounts.length === 0 ? (
+                                  <p className="text-center text-sm text-slate-500 py-4">Nenhuma conta de anúncios encontrada vinculada a este e-mail.</p>
+                              ) : (
+                                  adAccounts.map(account => (
+                                      <button 
+                                          key={account.id}
+                                          onClick={() => handleSelectAdAccount(account.id)}
+                                          className="w-full p-4 rounded-xl border border-slate-200 hover:border-navy hover:bg-slate-50 transition-all flex items-center justify-between group"
+                                      >
+                                          <div className="text-left">
+                                              <p className="font-bold text-navy text-sm group-hover:text-blue-600 transition-colors">{account.descriptiveName}</p>
+                                              <p className="text-[10px] text-slate-400 font-mono mt-1">ID: {account.id}</p>
+                                          </div>
+                                          <ChevronRight size={16} className="text-slate-300 group-hover:text-navy" />
+                                      </button>
+                                  ))
+                              )}
+                          </div>
+                      )}
+                  </div>
+              </div>
+          </div>
+      )}
+
     </div>
   );
 };
