@@ -55,6 +55,7 @@ app.post('/api/whatsapp/init', async (req, res) => {
     
     // Se o fetch falhar (ex: URL errada), vai pro catch
 
+    let createData = {};
     // 2. Se não existe (404), cria uma nova
     if (checkRes.status === 404) {
        console.log(`[Manager] Instância 404. Criando...`);
@@ -81,6 +82,9 @@ app.post('/api/whatsapp/init', async (req, res) => {
            console.error(`[Manager] Erro Criação: ${errText}`);
            throw new Error(`Falha ao criar instância: ${createRes.status}`);
        }
+       
+       // Captura dados da criação (pode conter o QR Code em algumas versões)
+       createData = await safeJson(createRes);
     }
 
     // 3. Conecta
@@ -104,8 +108,9 @@ app.post('/api/whatsapp/init', async (req, res) => {
 
     res.json({
         instanceName,
-        base64: connectData.base64 || connectData.qrcode?.base64, 
-        state: connectData?.instance?.state || 'connecting'
+        // Tenta pegar o QR code de todos os lugares possíveis
+        base64: connectData.base64 || connectData.qrcode?.base64 || createData.base64 || createData.qrcode?.base64, 
+        state: connectData?.instance?.state || createData?.instance?.state || 'connecting'
     });
 
   } catch (error) {

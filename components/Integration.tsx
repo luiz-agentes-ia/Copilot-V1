@@ -4,7 +4,8 @@ import {
   CheckCircle2, Calendar, Zap, Loader2, LogOut, Copy, Terminal,
   AlertOctagon, ExternalLink, FileSpreadsheet, Activity, AlertCircle,
   Search, ArrowRight, DownloadCloud, Table, FileDown, ArrowLeft,
-  LayoutList, Files, Settings, MessageCircle, Smartphone, Upload
+  LayoutList, Files, Settings, MessageCircle, Smartphone, Upload,
+  RefreshCw, Plus
 } from 'lucide-react';
 import { useApp } from '../App';
 import { signInWithGoogleAds, getAccessibleCustomers } from '../services/googleAdsService';
@@ -23,10 +24,6 @@ const GoogleIcon = ({ size = 20 }: { size?: number }) => (
     <path d="M12 4.19c1.69 0 3.21.58 4.4 1.72l3.3-3.3C17.71 1.03 15.11 0 12 0 7.3 0 3.12 3.62 1.04 8.07l3.62 2.81c1.04-3.11 3.93-5.41 7.34-5.41z" fill="#EA4335"/>
   </svg>
 );
-
-interface ExtendedAdAccount extends GoogleAdAccount {
-    isManager?: boolean;
-}
 
 const Integration: React.FC = () => {
   const { 
@@ -53,48 +50,51 @@ const Integration: React.FC = () => {
 
   // --- WHATSAPP LOGIC ---
   useEffect(() => {
+      let isMounted = true;
       const loadSavedInstance = async () => {
           if (!user) return;
           
           try {
-              // Adicionei um tratamento específico para ignorar o 404 se a tabela não existir
-              // O maybeSingle() evita erros se voltar vazio, mas se a tabela não existir, o catch pega.
+              // Verifica se a tabela existe de forma segura
               const { data, error } = await supabase
                 .from('whatsapp_instances')
                 .select('*')
                 .eq('user_id', user.id)
                 .maybeSingle();
 
+              if (!isMounted) return;
+
+              // Ignora erro 404 (tabela não existe) silenciosamente na UI
               if (error) {
-                  // Se for erro de conexão ou tabela faltando, apenas logamos discretamente e assumimos desconectado
-                  console.warn("Status WhatsApp: Tabela não encontrada ou erro de permissão (RLS). Assumindo desconectado.");
-                  return;
+                 // Apenas logamos em dev, mas não quebramos a UI
+                 if (error.code !== '42P01') { // 42P01 é undefined_table no Postgres, mas via REST pode ser 404
+                    console.warn("Supabase Warning:", error.message);
+                 }
+                 return; 
               }
 
               if (data) {
-                  // Se encontrou dados no banco, checa se está online na Evolution
+                  // Se encontrou dados no banco, checa se está online na API
                   try {
                       const status = await checkStatus(data.instance_name);
                       if (status.status === 'CONNECTED') {
                           setWhatsappConfig({ instanceName: data.instance_name, isConnected: true, apiKey: '', baseUrl: '' });
                           setWppStatus('CONNECTED');
                       } else {
-                          // Existe no banco mas tá offline na API
                           setWhatsappConfig({ instanceName: data.instance_name, isConnected: false, apiKey: '', baseUrl: '' });
                           setWppStatus('DISCONNECTED');
                       }
                   } catch (apiError) {
-                      console.warn("Erro ao checar status na Evolution:", apiError);
-                      // Mantém estado do banco mas marca como erro visualmente se necessário
+                      console.warn("API Check failed, keeping local state.");
                   }
               }
           } catch (e) { 
-             // Catch global para evitar crash da tela
-             console.error("Erro crítico ao carregar WhatsApp:", e); 
+             console.error("Critical WPP Load Error:", e);
           }
       };
       
       loadSavedInstance();
+      return () => { isMounted = false; };
   }, [user]);
 
   const handleWppConnect = async () => {
@@ -104,31 +104,44 @@ const Integration: React.FC = () => {
     setWppQr(null);
     try {
         const result = await initInstance(user.id, user.clinic);
+        
         if (result.state === 'open') {
             setWppStatus('CONNECTED');
             setWhatsappConfig({ instanceName: result.instanceName, isConnected: true, apiKey: '', baseUrl: '' });
         } else if (result.base64) {
             setWppStatus('QRCODE');
             setWppQr(result.base64);
-            const interval = setInterval(async () => {
-                 const check = await checkStatus(result.instanceName);
-                 if (check.status === 'CONNECTED') {
-                     clearInterval(interval);
-                     setWppStatus('CONNECTED');
-                     setWppQr(null);
-                     setWhatsappConfig({ instanceName: result.instanceName, isConnected: true, apiKey: '', baseUrl: '' });
-                 }
-            }, 3000);
-            setTimeout(() => clearInterval(interval), 60000);
+            startStatusPolling(result.instanceName);
+        } else if (result.state === 'connecting') {
+             // Caso não venha QR Code mas esteja conectando (ex: refresh), aguarda
+             setWppStatus('CONNECTING');
+             startStatusPolling(result.instanceName);
         } else {
             setWppStatus('DISCONNECTED');
-            setWppError("Não foi possível gerar o QR Code.");
+            setWppError("Não foi possível obter o QR Code. Tente novamente.");
         }
     } catch (err: any) {
         setWppStatus('DISCONNECTED');
-        setWppError(err.message || "Erro de conexão.");
+        setWppError(err.message || "Erro de conexão com servidor.");
     }
   };
+
+  const startStatusPolling = (instanceName: string) => {
+      const interval = setInterval(async () => {
+           try {
+               const check = await checkStatus(instanceName);
+               if (check.status === 'CONNECTED') {
+                   clearInterval(interval);
+                   setWppStatus('CONNECTED');
+                   setWppQr(null);
+                   setWhatsappConfig({ instanceName: instanceName, isConnected: true, apiKey: '', baseUrl: '' });
+               }
+           } catch(e) { console.error(e); }
+      }, 3000);
+      
+      // Para de checar após 2 minutos
+      setTimeout(() => clearInterval(interval), 120000);
+  }
 
   const handleWppDisconnect = async () => {
       setWhatsappConfig(null);
@@ -137,6 +150,13 @@ const Integration: React.FC = () => {
       if (user) {
           try { await supabase.from('whatsapp_instances').delete().eq('user_id', user.id); } catch (e) {}
       }
+  };
+  
+  // Helper para formatar o QR Code
+  const getQrCodeSrc = (base64: string) => {
+    if (!base64) return '';
+    if (base64.startsWith('data:image')) return base64;
+    return `data:image/png;base64,${base64}`;
   };
 
   // --- SHEETS LOGIC ---
@@ -205,7 +225,7 @@ const Integration: React.FC = () => {
               });
               count++;
           }
-          setImportStatus(`${count} leads importados com sucesso!`);
+          setImportStatus(`${count} leads importados!`);
           setTimeout(() => setImportStatus(''), 5000);
       } catch (e: any) {
           setImportStatus(`Erro: ${e.message}`);
@@ -243,13 +263,13 @@ const Integration: React.FC = () => {
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4 animate-in fade-in duration-500">
         {[
             { id: 'google-ads', label: 'Google Ads', active: !!googleAdsToken, icon: <GoogleIcon size={18} /> },
-            { id: 'calendar', label: 'G. Calendar', active: !!googleCalendarToken, icon: <Calendar size={18} /> },
-            { id: 'sheets', label: 'G. Sheets', active: !!googleSheetsToken, icon: <FileSpreadsheet size={18} /> },
-            { id: 'wpp', label: 'WhatsApp', active: !!whatsappConfig?.isConnected, icon: <MessageCircle size={18} /> },
+            { id: 'calendar', label: 'G. Calendar', active: !!googleCalendarToken, icon: <Calendar size={18} className={!!googleCalendarToken ? 'text-amber-500' : ''} /> },
+            { id: 'sheets', label: 'G. Sheets', active: !!googleSheetsToken, icon: <FileSpreadsheet size={18} className={!!googleSheetsToken ? 'text-emerald-500' : ''} /> },
+            { id: 'wpp', label: 'WhatsApp', active: !!whatsappConfig?.isConnected, icon: <MessageCircle size={18} className={!!whatsappConfig?.isConnected ? 'text-emerald-500' : ''} /> },
         ].map((item) => (
             <div key={item.id} className={`p-4 rounded-2xl border flex items-center justify-between transition-all ${item.active ? 'bg-emerald-50/50 border-emerald-100 shadow-sm' : 'bg-white border-slate-100 opacity-60 grayscale-[0.5]'}`}>
                 <div className="flex items-center gap-3">
-                    <div className={`p-2 rounded-xl ${item.active ? 'bg-white shadow-sm text-emerald-600' : 'bg-slate-50 text-slate-400'}`}>
+                    <div className={`p-2 rounded-xl ${item.active ? 'bg-white shadow-sm' : 'bg-slate-50 text-slate-400'}`}>
                         {item.icon}
                     </div>
                     <div>
@@ -265,10 +285,11 @@ const Integration: React.FC = () => {
 
       <div className="h-px bg-slate-200 w-full"></div>
 
+      {/* GRID PRINCIPAL DE CARDS */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
         
         {/* WHATSAPP CARD */}
-        <div className={`bg-white p-6 rounded-3xl border shadow-sm flex flex-col group transition-all ${whatsappConfig?.isConnected ? 'border-emerald-100 ring-1 ring-emerald-50' : 'border-slate-200 hover:border-navy'}`}>
+        <div className={`bg-white p-6 rounded-3xl border shadow-sm flex flex-col group transition-all relative overflow-hidden ${whatsappConfig?.isConnected ? 'border-emerald-100 ring-1 ring-emerald-50' : 'border-slate-200 hover:border-navy'}`}>
             <div className="flex justify-between items-start mb-4">
               <div className="p-3 bg-slate-50 rounded-2xl group-hover:bg-navy group-hover:text-white transition-colors"><MessageCircle size={24} className="text-emerald-600"/></div>
               {whatsappConfig?.isConnected ? <span className="flex items-center gap-1 text-[9px] font-black text-emerald-600 bg-emerald-50 px-2 py-1 rounded-full uppercase border border-emerald-100"><CheckCircle2 size={10} /> Ativo</span> : <span className="text-[9px] font-black text-slate-300 bg-slate-50 px-2 py-1 rounded-full uppercase border border-slate-100">Inativo</span>}
@@ -285,29 +306,36 @@ const Integration: React.FC = () => {
                </div>
             ) : (
                <div className="mt-auto space-y-3">
-                   {(wppStatus === 'IDLE' || wppStatus === 'DISCONNECTED' || wppStatus === 'CONNECTING') ? (
+                   {(wppStatus === 'IDLE' || wppStatus === 'DISCONNECTED') && (
                        <div className="space-y-3 animate-in fade-in">
-                          {wppError && <p className="text-[9px] text-rose-500 font-bold bg-rose-50 p-2 rounded">{wppError}</p>}
-                          <button onClick={handleWppConnect} disabled={wppStatus === 'CONNECTING'} className="w-full py-3 bg-navy text-white rounded-xl text-[10px] font-black uppercase flex justify-center items-center gap-2 hover:bg-slate-800 shadow-lg shadow-navy/20">
-                              {wppStatus === 'CONNECTING' ? <Loader2 size={12} className="animate-spin" /> : 'Gerar QR Code'}
+                          {wppError && <div className="text-[9px] text-rose-500 font-bold bg-rose-50 p-3 rounded-xl flex items-start gap-2 leading-tight"><AlertCircle size={14} className="shrink-0"/> {wppError}</div>}
+                          <button onClick={handleWppConnect} className="w-full py-3 bg-navy text-white rounded-xl text-[10px] font-black uppercase flex justify-center items-center gap-2 hover:bg-slate-800 shadow-lg shadow-navy/20">
+                              Gerar QR Code
                           </button>
                        </div>
-                   ) : wppStatus === 'QRCODE' && wppQr ? (
-                       <div className="text-center space-y-2 animate-in zoom-in">
-                           <p className="text-[10px] font-bold text-navy uppercase">Leia no WhatsApp</p>
-                           <img src={wppQr} alt="QR Code" className="w-32 h-32 mx-auto border-4 border-white shadow-lg rounded-xl" />
-                           <button onClick={() => setWppStatus('IDLE')} className="text-[9px] underline text-rose-400 mt-2">Cancelar</button>
+                   )}
+
+                   {wppStatus === 'CONNECTING' && (
+                       <div className="flex flex-col items-center py-4 text-slate-400 animate-in fade-in">
+                           <Loader2 size={24} className="animate-spin mb-2 text-navy" />
+                           <p className="text-[10px] font-bold uppercase">Conectando...</p>
                        </div>
-                   ) : (
-                       <div className="flex flex-col items-center py-4 text-slate-400">
-                           <Loader2 size={24} className="animate-spin mb-2" />
+                   )}
+
+                   {wppStatus === 'QRCODE' && wppQr && (
+                       <div className="text-center space-y-3 animate-in zoom-in">
+                           <div className="bg-white p-2 rounded-xl border border-slate-200 inline-block shadow-sm">
+                               <img src={getQrCodeSrc(wppQr)} alt="QR Code" className="w-48 h-48 object-contain" />
+                           </div>
+                           <p className="text-[10px] font-bold text-navy uppercase animate-pulse">Leia o QR Code no WhatsApp</p>
+                           <button onClick={() => setWppStatus('IDLE')} className="text-[9px] underline text-slate-400 hover:text-rose-400">Cancelar</button>
                        </div>
                    )}
                </div>
             )}
         </div>
 
-        {/* GOOGLE CALENDAR (RESTAURADO) */}
+        {/* GOOGLE CALENDAR CARD */}
         <div className={`bg-white p-6 rounded-3xl border shadow-sm flex flex-col group transition-all ${googleCalendarToken ? 'border-emerald-100 ring-1 ring-emerald-50' : 'border-slate-200 hover:border-navy'}`}>
             <div className="flex justify-between items-start mb-4">
               <div className="p-3 bg-slate-50 rounded-2xl group-hover:bg-navy group-hover:text-white transition-colors"><Calendar className="text-amber-500" /></div>
@@ -325,30 +353,30 @@ const Integration: React.FC = () => {
         </div>
 
         {/* SHEETS CARD */}
-        <div className={`bg-white p-6 rounded-3xl border shadow-sm flex flex-col group transition-all ${googleSheetsToken ? 'border-emerald-100 ring-1 ring-emerald-50 col-span-1 md:col-span-2' : 'border-slate-200 hover:border-navy'}`}>
+        <div className={`bg-white p-6 rounded-3xl border shadow-sm flex flex-col group transition-all ${googleSheetsToken ? 'border-emerald-100 ring-1 ring-emerald-50 col-span-1 md:col-span-2 lg:col-span-1' : 'border-slate-200 hover:border-navy'}`}>
             <div className="flex justify-between items-start mb-4">
               <div className="p-3 bg-slate-50 rounded-2xl group-hover:bg-navy group-hover:text-white transition-colors"><FileSpreadsheet className="text-emerald-500" /></div>
               {googleSheetsToken ? <span className="flex items-center gap-1 text-[9px] font-black text-emerald-600 bg-emerald-50 px-2 py-1 rounded-full uppercase border border-emerald-100"><CheckCircle2 size={10} /> Ativo</span> : <span className="text-[9px] font-black text-slate-300 bg-slate-50 px-2 py-1 rounded-full uppercase border border-slate-100">Inativo</span>}
             </div>
             <h3 className="font-black text-navy text-sm uppercase tracking-widest">Planilhas Google</h3>
-            <p className="text-[10px] text-slate-400 mt-1 mb-4">Importe listas de leads diretamente.</p>
+            <p className="text-[10px] text-slate-400 mt-1 mb-4">Importe listas de leads.</p>
             
             {googleSheetsToken ? (
                <div className="mt-auto space-y-4 animate-in fade-in">
                    <div className="p-4 bg-slate-50 border border-slate-100 rounded-xl space-y-3">
-                       {importStatus && <p className="text-[10px] font-bold text-emerald-600 bg-emerald-50 p-2 rounded mb-2">{importStatus}</p>}
+                       {importStatus && <p className="text-[9px] font-bold text-emerald-600 bg-emerald-50 p-2 rounded mb-2 text-center">{importStatus}</p>}
                        
-                       <div className="grid grid-cols-2 gap-3">
+                       <div className="space-y-2">
                            <div>
-                               <label className="text-[9px] font-bold text-slate-400 uppercase">Arquivo</label>
-                               <select onChange={handleSelectSpreadsheet} className="w-full mt-1 p-2 text-xs border rounded bg-white">
+                               <label className="text-[8px] font-bold text-slate-400 uppercase">Arquivo</label>
+                               <select onChange={handleSelectSpreadsheet} className="w-full mt-1 p-1.5 text-[10px] border rounded bg-white focus:outline-none focus:border-navy">
                                    <option value="">Selecione...</option>
                                    {spreadsheets.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
                                </select>
                            </div>
                            <div>
-                               <label className="text-[9px] font-bold text-slate-400 uppercase">Aba</label>
-                               <select onChange={e => setSelectedTab(e.target.value)} value={selectedTab} disabled={!selectedSpreadsheet} className="w-full mt-1 p-2 text-xs border rounded bg-white">
+                               <label className="text-[8px] font-bold text-slate-400 uppercase">Aba</label>
+                               <select onChange={e => setSelectedTab(e.target.value)} value={selectedTab} disabled={!selectedSpreadsheet} className="w-full mt-1 p-1.5 text-[10px] border rounded bg-white focus:outline-none focus:border-navy">
                                    {sheetTabs.map(t => <option key={t} value={t}>{t}</option>)}
                                </select>
                            </div>
@@ -359,10 +387,10 @@ const Integration: React.FC = () => {
                            disabled={importLoading || !selectedTab}
                            className="w-full bg-navy text-white py-2 rounded-lg text-[10px] font-bold uppercase flex justify-center items-center gap-2 hover:bg-slate-800 disabled:opacity-50"
                        >
-                           {importLoading ? <Loader2 size={12} className="animate-spin"/> : <><Upload size={12} /> Importar Dados</>}
+                           {importLoading ? <Loader2 size={12} className="animate-spin"/> : <><Upload size={12} /> Importar</>}
                        </button>
                    </div>
-                   <button onClick={handleSheetsLogout} className="text-[9px] font-bold text-rose-400 underline w-full text-center">Desconectar Conta</button>
+                   <button onClick={handleSheetsLogout} className="text-[9px] font-bold text-rose-400 underline w-full text-center">Desconectar</button>
                </div>
             ) : (
               <button onClick={handleSheetsLogin} disabled={!!loading} className={`mt-auto w-full py-3 rounded-xl font-black text-[10px] uppercase tracking-widest transition-all flex items-center justify-center gap-2 ${loading === 'sheets' ? 'bg-slate-100 text-slate-400' : 'bg-navy text-white hover:bg-slate-800 shadow-lg shadow-navy/20'}`}>
@@ -371,14 +399,14 @@ const Integration: React.FC = () => {
             )}
         </div>
 
-        {/* GOOGLE ADS */}
-        <div className={`bg-white p-6 rounded-3xl border shadow-sm flex flex-col group transition-all ${googleAdsToken ? 'border-emerald-100 ring-1 ring-emerald-50' : 'border-slate-200 hover:border-navy'}`}>
+        {/* GOOGLE ADS CARD */}
+        <div className={`bg-white p-6 rounded-3xl border shadow-sm flex flex-col group transition-all ${googleAdsToken ? 'border-emerald-100 ring-1 ring-emerald-50 col-span-1 md:col-span-2' : 'border-slate-200 hover:border-navy'}`}>
             <div className="flex justify-between items-start mb-4">
               <div className="p-3 bg-slate-50 rounded-2xl group-hover:bg-navy group-hover:text-white transition-colors"><GoogleIcon size={24} /></div>
               {googleAdsToken ? <span className="flex items-center gap-1 text-[9px] font-black text-emerald-600 bg-emerald-50 px-2 py-1 rounded-full uppercase border border-emerald-100"><CheckCircle2 size={10} /> Ativo</span> : <span className="text-[9px] font-black text-slate-300 bg-slate-50 px-2 py-1 rounded-full uppercase border border-slate-100">Inativo</span>}
             </div>
             <h3 className="font-black text-navy text-sm uppercase tracking-widest">Google Ads</h3>
-            <p className="text-[10px] text-slate-400 mt-1 mb-4">Métricas de campanhas.</p>
+            <p className="text-[10px] text-slate-400 mt-1 mb-4">Métricas de campanhas e ROI.</p>
             {googleAdsToken ? (
                <div className="mt-auto"><button onClick={handleGoogleLogout} className="w-full py-2 flex items-center justify-center gap-2 text-[10px] font-black uppercase text-rose-400 hover:text-rose-600 hover:bg-rose-50 rounded-xl transition-all"><LogOut size={12} /> Desconectar</button></div>
             ) : (
@@ -387,6 +415,7 @@ const Integration: React.FC = () => {
               </button>
             )}
         </div>
+
       </div>
     </div>
   );
