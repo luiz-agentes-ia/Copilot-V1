@@ -208,7 +208,11 @@ const Integration: React.FC = () => {
                </div>
             ) : (
                <div className="mt-auto space-y-3">
-                   {wppStatus === 'IDLE' || wppStatus === 'DISCONNECTED' ? (
+                   {/* 
+                      CORREÇÃO AQUI: Adicionado || wppStatus === 'CONNECTING' 
+                      para que o TypeScript saiba que 'CONNECTING' é um estado válido dentro deste bloco 
+                   */}
+                   {wppStatus === 'IDLE' || wppStatus === 'DISCONNECTED' || wppStatus === 'CONNECTING' ? (
                        <div className="space-y-3 animate-in fade-in">
                           {wppError && <p className="text-[9px] text-rose-500 font-bold bg-rose-50 p-2 rounded">{wppError}</p>}
                           <div className="p-3 bg-slate-50 rounded-xl border border-slate-100 text-[10px] text-slate-500">
