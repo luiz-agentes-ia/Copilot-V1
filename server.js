@@ -13,7 +13,7 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-// --- CONFIGURAÇÕES GLOBAIS (HARDCODED) ---
+// --- CONFIGURAÇÕES GLOBAIS ---
 const APP_BASE_URL = 'https://copilot-v1.onrender.com'; 
 const EVO_URL = 'https://task-dev-01-evolution-api.8ypyjm.easypanel.host';
 const EVO_GLOBAL_KEY = '429683C4C977415CAAFCCE10F7D57E11';
@@ -29,11 +29,16 @@ app.use(cors());
 app.use(express.json({ limit: '50mb' })); 
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
-// Helper para tratar respostas JSON com segurança
-const safeJson = async (response) => {
-  const text = await response.text();
-  try { return text ? JSON.parse(text) : {}; } 
-  catch (e) { return {}; }
+// Helper para tratar respostas JSON com segurança e LOGAR erros
+const safeJson = async (response, context = '') => {
+  try { 
+      const text = await response.text();
+      // console.log(`[Evo Response - ${context}]`, text.substring(0, 200)); 
+      return text ? JSON.parse(text) : {}; 
+  } catch (e) { 
+      console.warn(`Falha JSON [${context}]:`, e.message);
+      return {}; 
+  }
 };
 
 // ==============================================================================
@@ -41,110 +46,129 @@ const safeJson = async (response) => {
 // ==============================================================================
 
 app.post('/api/whatsapp/init', async (req, res) => {
-  const { userId, clinicName } = req.body;
+  const { userId } = req.body;
   
-  // Sanitiza o nome da instância (Evolution não aceita alguns caracteres)
+  if (!userId) return res.status(400).json({ error: 'User ID required' });
+
+  // Nome da instância limpo (Evolution não gosta de caracteres especiais)
   const instanceName = `user_${userId.replace(/[^a-zA-Z0-9]/g, '')}`;
-  console.log(`[Manager] Iniciando Instância: ${instanceName}`);
+  console.log(`[Manager] >>> INICIANDO PROCESSO PARA: ${instanceName}`);
+
+  const headers = { 
+    'apikey': EVO_GLOBAL_KEY, 
+    'Content-Type': 'application/json' 
+  };
 
   try {
-    // 1. Verificar Status Atual na Evolution
-    let currentState = 'disconnected';
+    // 1. CHECAGEM DE ESTADO
+    // Se já estiver conectado, não fazemos nada destrutivo.
     try {
-        const checkRes = await fetch(`${EVO_URL}/instance/connectionState/${instanceName}`, {
-           headers: { 'apikey': EVO_GLOBAL_KEY }
-        });
+        const checkRes = await fetch(`${EVO_URL}/instance/connectionState/${instanceName}`, { headers });
         if (checkRes.ok) {
-            const checkData = await safeJson(checkRes);
-            currentState = checkData?.instance?.state || 'disconnected';
+            const checkData = await safeJson(checkRes, 'CheckStatus');
+            if (checkData?.instance?.state === 'open') {
+                console.log('[Manager] Instância JÁ CONECTADA. Retornando sucesso.');
+                await supabase
+                  .from('whatsapp_instances')
+                  .upsert({ user_id: userId, instance_name: instanceName, status: 'connected' }, { onConflict: 'user_id' });
+                return res.json({ instanceName, state: 'open' });
+            }
         }
-    } catch (e) {
-        console.warn('[Manager] Falha ao checar status inicial, assumindo desconectado.');
-    }
+    } catch (e) { console.log('[Manager] Instância provavelmente offline ou inexistente.'); }
 
-    // 2. Se JÁ ESTIVER CONECTADO (open), apenas retorna sucesso e atualiza DB
-    if (currentState === 'open') {
-        console.log('[Manager] Instância já conectada.');
-        await supabase
-          .from('whatsapp_instances')
-          .upsert({ user_id: userId, instance_name: instanceName, status: 'connected' }, { onConflict: 'user_id' });
-        
-        return res.json({ instanceName, state: 'open' });
-    }
-
-    // 3. ESTRATÉGIA DELETE -> CREATE
-    // Se não estiver conectado, deletamos a instância antiga para limpar qualquer estado travado.
-    // Isso garante que a criação subsequente gere um QR Code novo.
-    console.log(`[Manager] Resetando instância ${instanceName} para gerar novo QR...`);
+    // 2. CICLO DE LIMPEZA (Logout -> Delete)
+    // Se o usuário pediu para iniciar, ele quer o QR Code. Vamos limpar o que existe.
+    console.log('[Manager] Limpando ambiente...');
     
-    // Tenta deletar (ignora erro 404 se não existir)
-    await fetch(`${EVO_URL}/instance/delete/${instanceName}`, {
-        method: 'DELETE',
-        headers: { 'apikey': EVO_GLOBAL_KEY }
-    });
+    // Logout (previne sockets presos)
+    await fetch(`${EVO_URL}/instance/logout/${instanceName}`, { method: 'DELETE', headers }).catch(() => {});
+    
+    // Delete (remove do banco da Evolution)
+    const deleteRes = await fetch(`${EVO_URL}/instance/delete/${instanceName}`, { method: 'DELETE', headers });
+    
+    if (deleteRes.ok) {
+        console.log('[Manager] Instância deletada com sucesso. Aguardando limpeza...');
+        // DELAY CRÍTICO: O EasyPanel/Docker precisa de tempo para liberar o arquivo de sessão
+        await new Promise(r => setTimeout(r, 3000));
+    } else {
+        console.log('[Manager] Instância não existia ou erro ao deletar. Prosseguindo.');
+    }
 
-    // Aguarda um breve momento para garantir que a Evolution processou o delete
-    await new Promise(r => setTimeout(r, 1000));
-
-    // 4. Cria nova instância solicitando QR Code
+    // 3. CRIAÇÃO DA INSTÂNCIA
+    console.log('[Manager] Criando nova instância...');
     const webhookUrl = `${APP_BASE_URL}/api/webhooks/whatsapp`;
     
     const createRes = await fetch(`${EVO_URL}/instance/create`, {
         method: 'POST',
-        headers: { 
-            'apikey': EVO_GLOBAL_KEY, 
-            'Content-Type': 'application/json' 
-        },
+        headers,
         body: JSON.stringify({
             instanceName: instanceName,
-            token: userId, // Token de segurança da instância
-            qrcode: true,  // Força retorno do QR Code na resposta
+            token: userId,
+            qrcode: true, 
             webhook: webhookUrl,
             webhook_by_events: true,
-            events: ["MESSAGES_UPSERT", "CONNECTION_UPDATE"]
+            events: ["MESSAGES_UPSERT", "CONNECTION_UPDATE"],
+            integration: "WHATSAPP-BAILEYS", // Engine V2 Padrão
+            reject_call: false,
+            msg_call: ""
         })
     });
     
-    const createData = await safeJson(createRes);
+    const createData = await safeJson(createRes, 'Create');
     
-    // Tenta extrair o QR code de diferentes formatos possíveis da resposta da Evolution
-    let base64 = createData.base64 || createData.qrcode?.base64 || createData.qrcode;
-
-    // Fallback: Se criou com sucesso mas não veio QR, tenta endpoint explícito de connect
-    if (!base64 && createData.instance?.state !== 'open') {
-         console.log('[Manager] QR Code não veio na criação. Tentando /connect...');
-         const connectRes = await fetch(`${EVO_URL}/instance/connect/${instanceName}`, {
-            headers: { 'apikey': EVO_GLOBAL_KEY }
-        });
-        const connectData = await safeJson(connectRes);
-        base64 = connectData.base64 || connectData.qrcode?.base64;
+    // Se der erro 403/409, significa que ela ainda existe. Vamos tentar conectar nela mesmo assim.
+    if (!createRes.ok && (createRes.status === 403 || createRes.status === 409)) {
+        console.warn('[Manager] Instância já existia (Delete falhou ou foi lento). Tentando conexão direta...');
+    } else if (!createRes.ok) {
+        // Erro real
+        throw new Error(createData.error || createData.message || 'Falha ao criar instância na Evolution');
     }
 
-    // Atualiza status no banco
-    const statusDb = base64 ? 'qrcode' : 'disconnected';
-    await supabase
-        .from('whatsapp_instances')
-        .upsert({ 
-            user_id: userId, 
-            instance_name: instanceName, 
-            status: statusDb
-        }, { onConflict: 'user_id' });
+    // 4. BUSCA DO QR CODE (CONNECT)
+    // Na v2, o create as vezes não retorna o base64 se o socket demorar.
+    // Chamamos o connect explicitamente.
+    console.log('[Manager] Solicitando QR Code via /connect...');
+    await new Promise(r => setTimeout(r, 1000)); // Espera a instância "subir"
 
-    console.log(`[Manager] Retornando para front. QR Code gerado? ${!!base64}`);
+    // IMPORTANTE: Na v2, connect é geralmente GET para recuperar o QR
+    const connectRes = await fetch(`${EVO_URL}/instance/connect/${instanceName}`, { 
+        method: 'GET', 
+        headers 
+    });
+    
+    const connectData = await safeJson(connectRes, 'Connect');
+    
+    // Normalização: O base64 pode vir em lugares diferentes dependendo da versão exata
+    const base64 = connectData.base64 || connectData.qrcode?.base64 || connectData.qrcode || createData.base64 || createData.qrcode?.base64;
 
-    res.json({
-        instanceName,
-        base64: base64, 
-        state: createData?.instance?.state || 'connecting'
+    if (base64) {
+        console.log('[Manager] QR Code obtido com sucesso!');
+        
+        await supabase
+            .from('whatsapp_instances')
+            .upsert({ user_id: userId, instance_name: instanceName, status: 'qrcode' }, { onConflict: 'user_id' });
+
+        return res.json({
+            instanceName,
+            base64: base64,
+            state: 'connecting'
+        });
+    } 
+    
+    console.error('[Manager] Falha ao obter QR Code.', connectData);
+    // Retornamos 200 com erro lógico para o frontend tratar sem crashar
+    return res.json({ 
+        error: true, 
+        message: 'A instância foi criada, mas o QR Code demorou para ser gerado. Tente clicar novamente em "Gerar QR Code".' 
     });
 
   } catch (error) {
     console.error('[Manager] Erro Crítico:', error);
-    res.status(500).json({ error: error.message || 'Erro interno no servidor Evolution' });
+    res.status(500).json({ error: error.message || 'Erro interno no servidor' });
   }
 });
 
-// ... (Resto das rotas mantidas iguais) ...
+// ... (Resto das rotas inalteradas) ...
 
 app.post('/api/whatsapp/status', async (req, res) => {
     const { instanceName } = req.body;
@@ -172,9 +196,11 @@ app.post('/api/webhooks/whatsapp', async (req, res) => {
     res.status(200).send('OK');
     try {
         const body = req.body;
-        // console.log('Webhook received:', body.event);
+        // Atualiza status no banco quando a Evolution notificar
         if (body.event === 'CONNECTION_UPDATE') {
-             await supabase.from('whatsapp_instances').update({ status: body.data.state === 'open' ? 'connected' : 'disconnected' }).eq('instance_name', body.instance);
+             const state = body.data?.state || body.data?.status;
+             const newStatus = state === 'open' ? 'connected' : 'disconnected';
+             await supabase.from('whatsapp_instances').update({ status: newStatus }).eq('instance_name', body.instance);
         }
     } catch (e) { console.error('[Webhook Error]', e); }
 });

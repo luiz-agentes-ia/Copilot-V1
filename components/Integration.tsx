@@ -98,12 +98,18 @@ const Integration: React.FC = () => {
     if (!user) return;
     setWppStatus('CONNECTING');
     setWppError('');
-    setWppQr(null); // Limpa QR anterior para não mostrar imagem velha
+    setWppQr(null); 
     
     try {
-        // Inicia processo de criação (o backend agora deleta instância antiga antes)
         const result = await initInstance(user.id, user.clinic);
         
+        // Verifica se a API retornou erro lógico (ex: timeout de QR code)
+        if (result.error) {
+            setWppStatus('DISCONNECTED');
+            setWppError(result.message);
+            return;
+        }
+
         if (result.state === 'open') {
             setWppStatus('CONNECTED');
             setWhatsappConfig({ instanceName: result.instanceName, isConnected: true, apiKey: '', baseUrl: '' });
@@ -112,13 +118,11 @@ const Integration: React.FC = () => {
             setWppQr(result.base64);
             startStatusPolling(result.instanceName);
         } else if (result.state === 'connecting') {
-             // Evolution está tentando conectar. Pode ter um QR code pendente ou já estar indo.
              setWppStatus('CONNECTING');
-             // Iniciamos o polling para ver se vira connected ou se precisamos tentar de novo
              startStatusPolling(result.instanceName);
         } else {
             setWppStatus('DISCONNECTED');
-            setWppError("Não foi possível gerar o QR Code. A instância pode estar em processo de atualização. Tente novamente em 10 segundos.");
+            setWppError("Instabilidade na Evolution API. Tente novamente em 1 minuto.");
         }
     } catch (err: any) {
         setWppStatus('DISCONNECTED');
@@ -318,8 +322,8 @@ const Integration: React.FC = () => {
                    {wppStatus === 'CONNECTING' && (
                        <div className="flex flex-col items-center py-4 text-slate-400 animate-in fade-in">
                            <Loader2 size={24} className="animate-spin mb-2 text-navy" />
-                           <p className="text-[10px] font-bold uppercase">Conectando ao WhatsApp...</p>
-                           <p className="text-[9px] text-slate-300 text-center px-4">Isso pode levar alguns segundos se estivermos reiniciando a instância.</p>
+                           <p className="text-[10px] font-bold uppercase">Reiniciando Instância...</p>
+                           <p className="text-[9px] text-slate-300 text-center px-4">Estamos reconfigurando a conexão com a Evolution API. Aguarde...</p>
                        </div>
                    )}
 
