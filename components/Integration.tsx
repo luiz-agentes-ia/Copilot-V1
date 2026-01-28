@@ -2,7 +2,7 @@
 import React, { useState, useEffect } from 'react';
 import { 
   CheckCircle2, Calendar, Loader2, LogOut, MessageCircle, Smartphone, 
-  FileSpreadsheet, Activity, AlertCircle, Upload
+  FileSpreadsheet, Activity, AlertCircle, Upload, RefreshCw
 } from 'lucide-react';
 import { useApp } from '../App';
 import { signInWithGoogleAds } from '../services/googleAdsService';
@@ -59,14 +59,12 @@ const Integration: React.FC = () => {
     setWppQr(null); 
     
     try {
-        // Backend nativo retorna { state, base64, instanceName }
         const result = await initInstance(user.id, user.clinic);
         
         if (result.state === 'open') {
             setWppStatus('CONNECTED');
             setWhatsappConfig({ instanceName: result.instanceName, isConnected: true, apiKey: '', baseUrl: '' });
         } else {
-            // Se veio base64, mostramos. Se não, começamos polling para esperar o backend gerar.
             if (result.base64) setWppQr(result.base64);
             setWppStatus(result.base64 ? 'QRCODE' : 'CONNECTING');
             startStatusPolling(result.instanceName);
@@ -78,45 +76,42 @@ const Integration: React.FC = () => {
   };
 
   const startStatusPolling = (instanceName: string) => {
+      let attempts = 0;
+      // Timeout aumentado para 3 minutos (90 tentativas de 2s)
+      const maxAttempts = 90; 
+
       const interval = setInterval(async () => {
+           attempts++;
            try {
                const check = await checkStatus(instanceName);
                
-               // Se o serviço retornou erro na checagem
                if (check.status === 'ERROR') {
-                   clearInterval(interval);
-                   setWppStatus('DISCONNECTED');
-                   setWppError('O servidor parou de responder. Tente novamente.');
-                   return;
-               }
+                   // Se falhar a rede 3x seguidas, paramos
+                   if (attempts % 5 === 0) console.warn("Erro de rede no polling, tentando reconectar...");
+               } else {
+                   // Backend atualizou o QR Code?
+                   if (check.base64 && check.state !== 'open') {
+                       setWppQr(check.base64);
+                       setWppStatus('QRCODE');
+                   }
 
-               // Backend atualizou o QR Code?
-               if (check.base64 && check.state !== 'open') {
-                   setWppQr(check.base64);
-                   setWppStatus('QRCODE');
+                   if (check.status === 'CONNECTED') {
+                       clearInterval(interval);
+                       setWppStatus('CONNECTED');
+                       setWppQr(null);
+                       setWhatsappConfig({ instanceName: instanceName, isConnected: true, apiKey: '', baseUrl: '' });
+                   }
                }
+           } catch(e) { console.error(e); }
 
-               if (check.status === 'CONNECTED') {
-                   clearInterval(interval);
-                   setWppStatus('CONNECTED');
-                   setWppQr(null);
-                   setWhatsappConfig({ instanceName: instanceName, isConnected: true, apiKey: '', baseUrl: '' });
-               }
-           } catch(e) { 
-               console.error(e);
-               // Não paramos o intervalo imediatamente em erro de rede esporádico, 
-               // mas o setTimeout abaixo garante que pare após 2 min.
+           if (attempts >= maxAttempts) {
+              clearInterval(interval);
+              if (wppStatus !== 'CONNECTED') {
+                  setWppStatus('IDLE'); // Volta para IDLE para permitir novo clique
+                  setWppError('Tempo limite excedido. O servidor demorou para responder.');
+              }
            }
-      }, 2000); // Check a cada 2s
-      
-      // Para polling após 2 minutos para evitar consumo excessivo
-      setTimeout(() => {
-          clearInterval(interval);
-          if (wppStatus !== 'CONNECTED') {
-              setWppStatus('IDLE');
-              setWppError('Tempo limite excedido. Tente novamente.');
-          }
-      }, 120000); 
+      }, 2000); 
   }
 
   const handleWppDisconnect = async () => {
@@ -269,9 +264,13 @@ const Integration: React.FC = () => {
                <div className="mt-auto space-y-3">
                    {(wppStatus === 'IDLE' || wppStatus === 'DISCONNECTED') && (
                        <div className="space-y-3 animate-in fade-in">
-                          {wppError && <div className="text-[9px] text-rose-500 font-bold bg-rose-50 p-3 rounded-xl flex items-start gap-2 leading-tight"><AlertCircle size={14} className="shrink-0"/> {wppError}</div>}
+                          {wppError && (
+                              <div className="text-[9px] text-rose-500 font-bold bg-rose-50 p-3 rounded-xl flex items-start gap-2 leading-tight mb-2">
+                                  <AlertCircle size={14} className="shrink-0"/> {wppError}
+                              </div>
+                          )}
                           <button onClick={handleWppConnect} className="w-full py-3 bg-navy text-white rounded-xl text-[10px] font-black uppercase flex justify-center items-center gap-2 hover:bg-slate-800 shadow-lg shadow-navy/20">
-                              Gerar QR Code
+                             {wppError ? <><RefreshCw size={14}/> Tentar Novamente</> : 'Gerar QR Code'}
                           </button>
                        </div>
                    )}
@@ -280,7 +279,7 @@ const Integration: React.FC = () => {
                        <div className="flex flex-col items-center py-4 text-slate-400 animate-in fade-in">
                            <Loader2 size={24} className="animate-spin mb-2 text-navy" />
                            <p className="text-[10px] font-bold uppercase">Iniciando Servidor...</p>
-                           <p className="text-[9px] text-slate-300 text-center px-4">Preparando conexão segura...</p>
+                           <p className="text-[9px] text-slate-300 text-center px-4">Isso pode levar até 20 segundos...</p>
                        </div>
                    )}
 
@@ -296,8 +295,8 @@ const Integration: React.FC = () => {
                </div>
             )}
         </div>
-
-        {/* ... (Outros cards mantidos) ... */}
+        
+        {/* Outros cards permanecem iguais... */}
         {/* GOOGLE CALENDAR CARD */}
         <div className={`bg-white p-6 rounded-3xl border shadow-sm flex flex-col group transition-all ${googleCalendarToken ? 'border-emerald-100 ring-1 ring-emerald-50' : 'border-slate-200 hover:border-navy'}`}>
             <div className="flex justify-between items-start mb-4">

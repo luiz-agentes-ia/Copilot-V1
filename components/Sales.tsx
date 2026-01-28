@@ -5,13 +5,16 @@ import {
   ArrowUpDown, AlertCircle, HandCoins, Receipt, DollarSign, ArrowUpRight, 
   Sparkles, Loader2, Network, Activity, Timer, ArrowRight, ArrowDownRight,
   Calendar, Stethoscope, UserX, Target, Zap, ChevronDown, Mail, Info,
-  Smartphone
+  Smartphone, Filter, MoreHorizontal
 } from 'lucide-react';
 import { analyzeLeadConversation } from '../services/geminiService';
 import { sendMessage } from '../services/whatsappService';
 import { useApp } from '../App';
 import { Lead, ChatMessage } from '../types';
 import { supabase } from '../lib/supabase';
+import { 
+  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell 
+} from 'recharts';
 
 const Sales: React.FC = () => {
   const { dateFilter, setDateFilter, metrics, leads, addLead, updateLead, addFinancialEntry, user, whatsappConfig } = useApp();
@@ -73,7 +76,7 @@ const Sales: React.FC = () => {
     
     return {
       leadsTotal: metrics.marketing.leads,
-      tempoResposta: '12 min',
+      tempoResposta: '12 min', // Mock por enquanto
       leadsRespondidosPct,
       conversaoConsultaNum: metrics.vendas.agendamentos,
       noShowPct,
@@ -110,6 +113,7 @@ const Sales: React.FC = () => {
         });
         setNewLeadName('');
         setNewLeadPhone('');
+        alert('Lead adicionado!');
     }
   }
 
@@ -155,6 +159,15 @@ const Sales: React.FC = () => {
     }
   };
 
+  // Dados mockados para o gráfico de barras da aba Metrics
+  const chartData = [
+      { name: 'Novos', value: leads.filter(l => l.status === 'Novo').length, fill: '#64748b' },
+      { name: 'Conversa', value: leads.filter(l => l.status === 'Conversa').length, fill: '#3b82f6' },
+      { name: 'Agendado', value: leads.filter(l => l.status === 'Agendado').length, fill: '#eab308' },
+      { name: 'Venda', value: leads.filter(l => l.status === 'Venda').length, fill: '#10b981' },
+      { name: 'Perdido', value: leads.filter(l => l.status === 'Perdido').length, fill: '#f43f5e' },
+  ];
+
   return (
     <div className="space-y-6 h-[calc(100vh-140px)] flex flex-col">
       <header className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 shrink-0">
@@ -172,8 +185,12 @@ const Sales: React.FC = () => {
           </div>
           <div className="h-8 w-px bg-slate-200"></div>
           <div className="flex gap-2 bg-white p-1 rounded-xl shadow-sm border border-slate-200">
-            <button onClick={() => setActiveTab('stats')} className={`px-4 py-1.5 rounded-lg text-[10px] font-bold uppercase transition-all ${activeTab === 'stats' ? 'bg-navy text-white shadow-md' : 'text-slate-500 hover:bg-slate-50'}`}>Métricas</button>
-            <button onClick={() => setActiveTab('chat')} className={`px-4 py-1.5 rounded-lg text-[10px] font-bold uppercase transition-all ${activeTab === 'chat' ? 'bg-navy text-white shadow-md' : 'text-slate-500 hover:bg-slate-50'}`}>Leads (Chat)</button>
+            <button onClick={() => setActiveTab('stats')} className={`px-4 py-1.5 rounded-lg text-[10px] font-bold uppercase transition-all flex items-center gap-2 ${activeTab === 'stats' ? 'bg-navy text-white shadow-md' : 'text-slate-500 hover:bg-slate-50'}`}>
+                <Activity size={12} /> Métricas
+            </button>
+            <button onClick={() => setActiveTab('chat')} className={`px-4 py-1.5 rounded-lg text-[10px] font-bold uppercase transition-all flex items-center gap-2 ${activeTab === 'chat' ? 'bg-navy text-white shadow-md' : 'text-slate-500 hover:bg-slate-50'}`}>
+                <MessageCircle size={12} /> Chats
+            </button>
           </div>
         </div>
       </header>
@@ -282,19 +299,103 @@ const Sales: React.FC = () => {
           </div>
         </div>
       ) : (
-        /* ABA DE MÉTRICAS MANTIDA ORIGINAL */
-        <div className="space-y-8 overflow-y-auto pr-2 pb-20 animate-in fade-in duration-300 custom-scrollbar">
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-             {/* Cards de Métricas (mantidos do código anterior, omitidos aqui por brevidade mas presentes na lógica original) */}
+        /* ABA DE MÉTRICAS COMPLETA */
+        <div className="space-y-6 overflow-y-auto pr-2 pb-20 animate-in fade-in duration-300 custom-scrollbar">
+          
+          {/* 1. CARDS DE KPI */}
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
              <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm flex flex-col justify-between group hover:border-blue-400 transition-all">
                <div className="flex items-center gap-3 mb-3">
                  <div className="p-2 bg-blue-50 text-blue-600 rounded-lg"><Users size={18} /></div>
-                 <span className="text-[9px] font-medium text-slate-400 uppercase tracking-widest">Leads (Volume Total)</span>
+                 <span className="text-[9px] font-medium text-slate-400 uppercase tracking-widest">Leads (Total)</span>
                </div>
                <div><p className="text-2xl font-bold text-navy tracking-tight">{stats.leadsTotal}</p></div>
+               <div className="mt-2 text-[9px] font-bold text-emerald-500 bg-emerald-50 w-fit px-2 py-0.5 rounded-full">
+                   {stats.leadsRespondidosPct.toFixed(0)}% Respondidos
+               </div>
              </div>
-             {/* ... outros cards ... */}
+
+             <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm flex flex-col justify-between group hover:border-amber-400 transition-all">
+               <div className="flex items-center gap-3 mb-3">
+                 <div className="p-2 bg-amber-50 text-amber-600 rounded-lg"><Clock size={18} /></div>
+                 <span className="text-[9px] font-medium text-slate-400 uppercase tracking-widest">Tempo Resposta</span>
+               </div>
+               <div><p className="text-2xl font-bold text-navy tracking-tight">{stats.tempoResposta}</p></div>
+               <div className="mt-2 text-[9px] font-bold text-slate-400">Média da equipe</div>
+             </div>
+
+             <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm flex flex-col justify-between group hover:border-emerald-400 transition-all">
+               <div className="flex items-center gap-3 mb-3">
+                 <div className="p-2 bg-emerald-50 text-emerald-600 rounded-lg"><Calendar size={18} /></div>
+                 <span className="text-[9px] font-medium text-slate-400 uppercase tracking-widest">Agendamentos</span>
+               </div>
+               <div><p className="text-2xl font-bold text-navy tracking-tight">{stats.conversaoConsultaNum}</p></div>
+               <div className="mt-2 text-[9px] font-bold text-blue-500 bg-blue-50 w-fit px-2 py-0.5 rounded-full">
+                   {stats.taxaCDCPct.toFixed(1)}% Conversão
+               </div>
+             </div>
+
+             <div className="bg-navy p-6 rounded-2xl border border-navy shadow-lg flex flex-col justify-between text-white relative overflow-hidden">
+               <div className="absolute top-0 right-0 p-4 opacity-10"><DollarSign size={60} /></div>
+               <div className="flex items-center gap-3 mb-3 relative z-10">
+                 <div className="p-2 bg-white/10 text-emerald-400 rounded-lg"><HandCoins size={18} /></div>
+                 <span className="text-[9px] font-medium text-blue-200 uppercase tracking-widest">Vendas Totais</span>
+               </div>
+               <div className="relative z-10"><p className="text-2xl font-bold tracking-tight">R$ {stats.faturamentoTotal.toLocaleString('pt-BR')}</p></div>
+               <div className="mt-2 text-[9px] font-bold text-emerald-400 relative z-10">
+                   {stats.vendasTotal} Contratos Fechados
+               </div>
+             </div>
           </div>
+
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            {/* 2. GRÁFICO DE FUNIL */}
+            <div className="lg:col-span-2 bg-white p-8 rounded-3xl border border-slate-200 shadow-sm">
+                 <div className="flex justify-between items-center mb-6">
+                    <h3 className="text-sm font-bold text-navy uppercase tracking-widest">Funil de Vendas</h3>
+                    <button className="p-2 hover:bg-slate-50 rounded-lg text-slate-400"><MoreHorizontal size={16}/></button>
+                 </div>
+                 <div className="h-64 w-full">
+                    <ResponsiveContainer width="100%" height="100%">
+                        <BarChart data={chartData}>
+                            <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                            <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{fontSize: 10, fill: '#64748b'}} dy={10} />
+                            <YAxis hide />
+                            <Tooltip cursor={{fill: '#f8fafc'}} contentStyle={{borderRadius: '12px', border: 'none', boxShadow: '0 4px 12px rgba(0,0,0,0.1)'}} />
+                            <Bar dataKey="value" radius={[6, 6, 0, 0]} barSize={40}>
+                                {chartData.map((entry, index) => (
+                                    <Cell key={`cell-${index}`} fill={entry.fill} />
+                                ))}
+                            </Bar>
+                        </BarChart>
+                    </ResponsiveContainer>
+                 </div>
+            </div>
+
+            {/* 3. LISTA RÁPIDA DE LEADS (Kanban-like List) */}
+            <div className="bg-white p-6 rounded-3xl border border-slate-200 shadow-sm flex flex-col">
+                <div className="flex justify-between items-center mb-4">
+                    <h3 className="text-sm font-bold text-navy uppercase tracking-widest">Recentes</h3>
+                    <button onClick={() => setActiveTab('chat')} className="text-[10px] font-bold text-blue-600 hover:underline">Ver Todos</button>
+                </div>
+                <div className="flex-1 overflow-y-auto space-y-3 custom-scrollbar max-h-[300px]">
+                    {leads.slice(0, 6).map((lead) => (
+                        <div key={lead.id} className="flex items-center gap-3 p-3 rounded-xl border border-slate-100 hover:bg-slate-50 transition-colors cursor-pointer" onClick={() => { setActiveLead(lead); setActiveTab('chat'); }}>
+                            <div className={`w-8 h-8 rounded-full flex items-center justify-center text-[10px] font-bold ${lead.status === 'Novo' ? 'bg-slate-100 text-slate-500' : 'bg-blue-100 text-blue-600'}`}>
+                                {lead.name.charAt(0)}
+                            </div>
+                            <div className="flex-1 min-w-0">
+                                <p className="text-xs font-bold text-navy truncate">{lead.name}</p>
+                                <p className="text-[9px] text-slate-400 truncate">{lead.status} • {lead.lastInteraction}</p>
+                            </div>
+                            <ChevronDown size={12} className="-rotate-90 text-slate-300" />
+                        </div>
+                    ))}
+                    {leads.length === 0 && <p className="text-center text-xs text-slate-400 py-8">Sem leads recentes.</p>}
+                </div>
+            </div>
+          </div>
+
         </div>
       )}
     </div>
