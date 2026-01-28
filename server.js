@@ -20,6 +20,7 @@ const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.VITE_S
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
 // --- EVOLUTION API CONFIG ---
+// Usa a chave global fornecida no painel
 const EVO_URL = process.env.EVOLUTION_API_URL || 'https://task-dev-01-evolution-api.8ypyjm.easypanel.host';
 const EVO_KEY = process.env.EVOLUTION_GLOBAL_KEY || '429683C4C977415CAAFCCE10F7D57E11';
 
@@ -45,11 +46,12 @@ const evoRequest = async (endpoint, method = 'GET', body = null) => {
         // Remove barra duplicada se houver
         const url = `${EVO_URL}${endpoint.startsWith('/') ? '' : '/'}${endpoint}`;
         
+        console.log(`[EVO REQ] ${method} ${url}`);
+        
         const response = await fetch(url, options);
         if (!response.ok) {
-            // Tenta ler o erro
             const errText = await response.text();
-            console.error(`[EVO ERROR] ${endpoint}:`, errText);
+            console.error(`[EVO ERROR] ${endpoint} (${response.status}):`, errText);
             return null;
         }
         return await response.json();
@@ -64,18 +66,19 @@ const evoRequest = async (endpoint, method = 'GET', body = null) => {
 // ==============================================================================
 
 app.post('/api/whatsapp/init', async (req, res) => {
-    const { userId, clinicName } = req.body;
+    const { userId, clinicName, phoneNumber } = req.body;
     if (!userId) return res.status(400).json({ error: 'User ID required' });
 
     const instanceName = `copilot_${userId.replace(/-/g, '')}`;
 
-    console.log(`[WPP INIT] Verificando instância: ${instanceName}`);
+    console.log(`[WPP INIT] User: ${userId} | Phone: ${phoneNumber || 'QR'} | Instance: ${instanceName}`);
 
-    // 1. Tenta criar a instância (se já existir, a Evo retorna erro ou ignora, então tratamos)
+    // 1. Tenta criar a instância
+    // Se phoneNumber existir, qrcode = false para preparar para o Pairing Code
     const createResult = await evoRequest('/instance/create', 'POST', {
         instanceName: instanceName,
-        token: userId, // Usamos o ID do user como token de segurança da instância
-        qrcode: true,
+        token: userId,
+        qrcode: !phoneNumber, 
         integration: "WHATSAPP-BAILEYS"
     });
 
@@ -84,7 +87,6 @@ app.post('/api/whatsapp/init', async (req, res) => {
     
     // Se estiver conectado
     if (connectionState?.instance?.state === 'open') {
-        // Salva no banco que está on
         await supabase.from('whatsapp_instances')
             .upsert({ user_id: userId, instance_name: instanceName, status: 'connected' }, { onConflict: 'user_id' });
             
@@ -95,8 +97,21 @@ app.post('/api/whatsapp/init', async (req, res) => {
         });
     }
 
-    // Se não estiver conectado, pedimos o QR Code
-    // Na Evolution v2, o endpoint connect devolve o base64
+    // Lógica de Pairing Code ou QR Code
+    if (phoneNumber) {
+        // Para Pairing Code na Evo V2: GET /instance/connect/{name}?number={phone}
+        const connectResult = await evoRequest(`/instance/connect/${instanceName}?number=${phoneNumber}`, 'GET');
+        
+        if (connectResult && (connectResult.code || connectResult.pairingCode)) {
+             return res.json({
+                state: 'pairing',
+                pairingCode: connectResult.code || connectResult.pairingCode,
+                instanceName
+             });
+        }
+    } 
+    
+    // Fallback para QR Code
     const connectResult = await evoRequest(`/instance/connect/${instanceName}`, 'GET');
     
     if (connectResult && (connectResult.base64 || connectResult.code)) {
@@ -105,12 +120,12 @@ app.post('/api/whatsapp/init', async (req, res) => {
 
         return res.json({
             state: 'connecting',
-            base64: connectResult.base64 || connectResult.code, // Evolution as vezes retorna 'code' ou 'base64'
+            base64: connectResult.base64 || connectResult.code, 
             instanceName
         });
     }
 
-    res.json({ state: 'connecting', instanceName, message: 'Aguardando geração do QR Code...' });
+    res.json({ state: 'connecting', instanceName, message: 'Aguardando código...' });
 });
 
 app.post('/api/whatsapp/status', async (req, res) => {
@@ -118,19 +133,16 @@ app.post('/api/whatsapp/status', async (req, res) => {
     if (!instanceName) return res.status(400).json({ error: 'Instance Name Required' });
 
     const stateData = await evoRequest(`/instance/connectionState/${instanceName}`);
-    
     const state = stateData?.instance?.state || 'close';
     
     if (state === 'open') {
         return res.json({ instance: { state: 'open' } });
     }
 
-    // Se estiver fechado, tentamos pegar o QR Code novamente para manter atualizado na tela
-    const connectResult = await evoRequest(`/instance/connect/${instanceName}`, 'GET');
-    
+    // Se ainda não conectou, não precisa retornar o QR/Pairing novamente aqui se estivermos usando Pairing Code
+    // O frontend só chama isso para saber "já conectou?"
     res.json({
-        instance: { state: state },
-        base64: connectResult?.base64 || connectResult?.code
+        instance: { state: state }
     });
 });
 
@@ -139,14 +151,8 @@ app.post('/api/whatsapp/send', async (req, res) => {
     
     const body = {
         number: number,
-        options: {
-            delay: 1200,
-            presence: "composing",
-            linkPreview: false
-        },
-        textMessage: {
-            text: text
-        }
+        options: { delay: 1200, presence: "composing", linkPreview: false },
+        textMessage: { text: text }
     };
 
     const result = await evoRequest(`/message/sendText/${instanceName}`, 'POST', body);
@@ -174,27 +180,17 @@ app.post('/api/google-ads', async (req, res) => {
         const API_VERSION = 'v16';
         const BASE_URL = `https://googleads.googleapis.com/${API_VERSION}`;
         
-        // Header padrão para chamadas Google Ads
-        // IMPORTANTE: login-customer-id é necessário para operações em contas de cliente se o token for de uma MCC,
-        // mas no listAccessibleCustomers não usamos.
         const headers = { 
             'Authorization': `Bearer ${access_token}`, 
             'developer-token': developer_token, 
             'Content-Type': 'application/json' 
         };
 
-        // --- AÇÃO 1: LISTAR CONTAS ---
         if (action === 'list_customers') {
              const gRes = await fetch(`${BASE_URL}/customers:listAccessibleCustomers`, { headers });
              const gData = await safeJson(gRes);
-             
-             if (gData.error) {
-                 return res.status(400).json({ error: gData.error.message });
-             }
+             if (gData.error) return res.status(400).json({ error: gData.error.message });
 
-             // Para cada recurso, tentamos pegar detalhes (nome) se possível, 
-             // mas listAccessibleCustomers retorna apenas resourceNames.
-             // O frontend vai tratar de exibir o ID.
              const customers = (gData.resourceNames || []).map(r => {
                  const id = r.replace('customers/', '');
                  return { id: id, name: r, descriptiveName: `Conta ${id}`, currencyCode: 'BRL' };
@@ -202,50 +198,19 @@ app.post('/api/google-ads', async (req, res) => {
              return res.json({ customers });
         }
         
-        // --- AÇÃO 2: BUSCAR CAMPANHAS ---
         if (action === 'get_campaigns') {
             if (!customer_id) return res.status(400).json({ error: 'Customer ID required' });
-            
             const cleanId = customer_id.replace(/-/g, '');
-            
-            // Aqui é o pulo do gato para MCC: Se o usuário selecionou uma conta filha, 
-            // precisamos passar o header 'login-customer-id' CASO o token tenha vindo de uma MCC.
-            // Como não sabemos se é MCC ou não só pelo token, tentamos direto. 
-            // Se der erro de permissão, o frontend deve avisar.
-            // Para simplificar, usamos a chamada direta na conta alvo.
-
             const query = `
-                SELECT 
-                  campaign.id, 
-                  campaign.name, 
-                  campaign.status, 
-                  metrics.clicks, 
-                  metrics.impressions, 
-                  metrics.cost_micros, 
-                  metrics.conversions 
-                FROM campaign 
-                WHERE campaign.status != 'REMOVED' 
-                AND segments.date BETWEEN '${date_range.start}' AND '${date_range.end}'
-                LIMIT 50
+                SELECT campaign.id, campaign.name, campaign.status, metrics.clicks, metrics.impressions, metrics.cost_micros, metrics.conversions 
+                FROM campaign WHERE campaign.status != 'REMOVED' AND segments.date BETWEEN '${date_range.start}' AND '${date_range.end}' LIMIT 50
             `;
             
-            // Adiciona login-customer-id se o usuário estiver acessando uma sub-conta
-            // (Na prática, a API do Google infere isso, mas às vezes precisa do header)
-            // const headersWithLogin = { ...headers, 'login-customer-id': cleanId }; 
-            
             const gRes = await fetch(`${BASE_URL}/customers/${cleanId}/googleAds:search`, { 
-                method: 'POST', 
-                headers: headers, // Tenta sem o login-customer-id primeiro
-                body: JSON.stringify({ query }) 
+                method: 'POST', headers, body: JSON.stringify({ query }) 
             });
-            
             const gData = await safeJson(gRes);
-            
-            if (gData.error) {
-                console.error("Google Ads Error:", gData.error);
-                return res.status(400).json({ error: gData.error.message });
-            }
-            
+            if (gData.error) return res.status(400).json({ error: gData.error.message });
             return res.json({ results: gData.results || [] });
         }
 

@@ -35,11 +35,11 @@ const safeFetch = async (url: string, options: any) => {
 };
 
 // 1. Iniciar conexão (backend chama Evolution e retorna base64 se tiver)
-export const initInstance = async (userId: string, clinicName: string) => {
+export const initInstance = async (userId: string, clinicName: string, phoneNumber?: string) => {
     return safeFetch(`${API_BASE}/init`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ userId, clinicName })
+        body: JSON.stringify({ userId, clinicName, phoneNumber })
     });
 };
 
