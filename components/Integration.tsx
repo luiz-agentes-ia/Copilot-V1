@@ -82,6 +82,14 @@ const Integration: React.FC = () => {
            try {
                const check = await checkStatus(instanceName);
                
+               // Se o serviço retornou erro na checagem
+               if (check.status === 'ERROR') {
+                   clearInterval(interval);
+                   setWppStatus('DISCONNECTED');
+                   setWppError('O servidor parou de responder. Tente novamente.');
+                   return;
+               }
+
                // Backend atualizou o QR Code?
                if (check.base64 && check.state !== 'open') {
                    setWppQr(check.base64);
@@ -94,11 +102,21 @@ const Integration: React.FC = () => {
                    setWppQr(null);
                    setWhatsappConfig({ instanceName: instanceName, isConnected: true, apiKey: '', baseUrl: '' });
                }
-           } catch(e) { console.error(e); }
+           } catch(e) { 
+               console.error(e);
+               // Não paramos o intervalo imediatamente em erro de rede esporádico, 
+               // mas o setTimeout abaixo garante que pare após 2 min.
+           }
       }, 2000); // Check a cada 2s
       
       // Para polling após 2 minutos para evitar consumo excessivo
-      setTimeout(() => clearInterval(interval), 120000); 
+      setTimeout(() => {
+          clearInterval(interval);
+          if (wppStatus !== 'CONNECTED') {
+              setWppStatus('IDLE');
+              setWppError('Tempo limite excedido. Tente novamente.');
+          }
+      }, 120000); 
   }
 
   const handleWppDisconnect = async () => {
