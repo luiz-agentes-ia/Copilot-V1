@@ -32,13 +32,15 @@ export interface Lead {
   id: string; // UUID no banco
   name: string;
   phone: string;
+  email?: string; // Novo
+  procedure?: string; // Novo (Interesse)
+  notes?: string; // Novo (Obs)
   status: 'Novo' | 'Conversa' | 'Agendado' | 'No Show' | 'Venda' | 'Perdido';
   temperature: 'Hot' | 'Warm' | 'Cold';
   lastMessage?: string;
   lastInteraction?: string;
   history?: string; // JSON ou Texto longo
   potentialValue?: number;
-  // Alterado para string para aceitar "Google Sheets" e evitar erro TS2322 no build
   source?: string;
   created_at?: string;
 }
@@ -76,10 +78,17 @@ export interface Appointment {
   date: string;
   time: string;
   patientName: string;
-  // Alterado para string para flexibilidade
   type: 'Avaliação' | 'Retorno' | 'Procedimento' | 'Cirurgia' | 'Google Calendar' | string;
   status: 'Confirmado' | 'Pendente' | 'Cancelado' | 'Realizado' | string;
   isGoogle?: boolean; 
+}
+
+// --- CONFIGURAÇÃO WHATSAPP ---
+export interface WhatsappConfig {
+  baseUrl: string;
+  apiKey: string;
+  instanceName: string;
+  isConnected: boolean;
 }
 
 // --- DASHBOARD AGGREGATES ---

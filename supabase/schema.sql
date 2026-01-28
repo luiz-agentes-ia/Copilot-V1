@@ -78,6 +78,9 @@ create table if not exists leads (
   user_id uuid references auth.users(id) on delete cascade not null,
   name text,
   phone text,
+  email text, -- Novo
+  procedure text, -- Novo (Interesse)
+  notes text, -- Novo (Observações)
   status text default 'Novo',
   temperature text default 'Cold',
   last_message text,
@@ -172,14 +175,28 @@ create policy "Users can view metrics" on ad_metrics for select using (
 );
 
 -- ==========================================
--- 7. ATIVAR REALTIME (Obrigatório para o App funcionar ao vivo)
+-- 7. WHATSAPP INSTANCES
 -- ==========================================
+create table if not exists whatsapp_instances (
+  id uuid primary key default uuid_generate_v4(),
+  user_id uuid references auth.users(id) on delete cascade not null unique,
+  instance_name text not null,
+  status text default 'disconnected',
+  created_at timestamp with time zone default now(),
+  updated_at timestamp with time zone default now()
+);
 
--- Remove a publicação existente para garantir que ela seja recriada com todas as tabelas corretas
+alter table whatsapp_instances enable row level security;
+
+drop policy if exists "Users can view own instance" on whatsapp_instances;
+create policy "Users can view own instance" on whatsapp_instances for select using (auth.uid() = user_id);
+
+drop policy if exists "Users can update own instance" on whatsapp_instances;
+create policy "Users can update own instance" on whatsapp_instances for update using (auth.uid() = user_id);
+-- Nota: O backend deve usar a SERVICE_ROLE_KEY para ignorar essas políticas ao atualizar via Webhook.
+
+-- ==========================================
+-- 8. ATIVAR REALTIME
+-- ==========================================
 drop publication if exists supabase_realtime;
-
--- Cria a publicação monitorando as tabelas principais
-create publication supabase_realtime for table transactions, leads, appointments;
-
--- Confirmação
-select 'Tabelas e Realtime configurados com sucesso!' as status;
+create publication supabase_realtime for table transactions, leads, appointments, whatsapp_instances;

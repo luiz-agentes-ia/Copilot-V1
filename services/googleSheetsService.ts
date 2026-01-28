@@ -15,7 +15,7 @@ export const signInWithGoogleSheets = async () => {
   const { data, error } = await supabase.auth.signInWithOAuth({
     provider: 'google',
     options: {
-      // Adicionado drive.readonly para poder LISTAR os arquivos
+      // drive.readonly é necessário para listar arquivos
       scopes: 'https://www.googleapis.com/auth/spreadsheets https://www.googleapis.com/auth/drive.readonly',
       redirectTo: returnUrl, 
       queryParams: {
@@ -42,10 +42,38 @@ export const listSpreadsheets = async (accessToken: string) => {
       }
     });
 
-    if (!response.ok) throw new Error('Falha ao listar arquivos do Drive');
+    if (!response.ok) {
+        const errorText = await response.text();
+        let errorMsg = 'Falha ao listar arquivos do Drive';
+        let errorCode = 'UNKNOWN';
+        
+        try {
+            const errorJson = JSON.parse(errorText);
+            const message = errorJson.error?.message || '';
+            const status = errorJson.error?.status || '';
+
+            // Detecta API desativada
+            if (message.includes('Drive API has not been used') || message.includes('API has not been used')) {
+                 errorCode = 'API_DISABLED';
+            } 
+            // Detecta falta de escopo/permissão
+            else if (message.includes('insufficient authentication scopes') || status === 'PERMISSION_DENIED') {
+                 errorCode = 'SCOPES_MISSING';
+            }
+            
+            errorMsg = message || errorMsg;
+        } catch (e) {
+            console.warn("Non-JSON error response from Google:", errorText);
+        }
+        
+        const error = new Error(errorMsg);
+        (error as any).code = errorCode;
+        throw error;
+    }
+
     const data = await response.json();
     return data.files || [];
-  } catch (error) {
+  } catch (error: any) {
     console.error("Erro ao listar planilhas:", error);
     throw error;
   }
@@ -62,7 +90,11 @@ export const getSpreadsheetDetails = async (accessToken: string, spreadsheetId: 
       }
     });
 
-    if (!response.ok) throw new Error('Falha ao obter detalhes da planilha');
+    if (!response.ok) {
+        const errText = await response.text();
+        console.error("Erro ao ler detalhes da planilha:", errText);
+        throw new Error('Falha ao obter detalhes da planilha');
+    }
     const data = await response.json();
     
     // Retorna array de nomes das abas

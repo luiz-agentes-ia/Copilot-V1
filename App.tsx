@@ -9,7 +9,7 @@ import Automation from './components/Automation';
 import Financial from './components/Financial';
 import Integration from './components/Integration';
 import Profile from './components/Profile';
-import { AppSection, DateRange, ConsolidatedMetrics, FinancialEntry, Lead, Appointment } from './types';
+import { AppSection, DateRange, ConsolidatedMetrics, FinancialEntry, Lead, Appointment, WhatsappConfig } from './types';
 import { Menu, X, Bot, Loader2, AlertCircle, ArrowRight, ShieldCheck } from 'lucide-react';
 import { supabase } from './lib/supabase';
 
@@ -35,11 +35,13 @@ interface AppContextType {
   googleCalendarToken: string | null;
   googleAdsToken: string | null;
   googleSheetsToken: string | null;
+  whatsappConfig: WhatsappConfig | null;
   
   // Setters
   setGoogleCalendarToken: (token: string | null) => void;
   setGoogleAdsToken: (token: string | null) => void;
   setGoogleSheetsToken: (token: string | null) => void;
+  setWhatsappConfig: (config: WhatsappConfig | null) => void;
   toggleIntegration: (id: string) => void;
   
   // Data & Metrics
@@ -100,14 +102,29 @@ const App: React.FC = () => {
   const [leads, setLeads] = useState<Lead[]>([]);
   const [appointments, setAppointments] = useState<Appointment[]>([]);
   
-  // Tokens
+  // Tokens & Configs
   const [googleCalendarToken, setGoogleCalendarToken] = useState<string | null>(localStorage.getItem('google_calendar_token'));
   const [googleAdsToken, setGoogleAdsToken] = useState<string | null>(localStorage.getItem('google_ads_token'));
   const [googleSheetsToken, setGoogleSheetsToken] = useState<string | null>(localStorage.getItem('google_sheets_token'));
+  
+  // Load Whatsapp Config from LocalStorage
+  const [whatsappConfig, setWhatsappConfigState] = useState<WhatsappConfig | null>(() => {
+    const saved = localStorage.getItem('whatsapp_config');
+    return saved ? JSON.parse(saved) : null;
+  });
+
+  const setWhatsappConfig = (config: WhatsappConfig | null) => {
+    setWhatsappConfigState(config);
+    if (config) {
+      localStorage.setItem('whatsapp_config', JSON.stringify(config));
+    } else {
+      localStorage.removeItem('whatsapp_config');
+    }
+  };
 
   const [integrations, setIntegrations] = useState<Record<string, boolean>>({
     'google-ads': !!googleAdsToken, 
-    'wpp': true, 
+    'wpp': !!whatsappConfig?.isConnected, 
     'sheets': !!googleSheetsToken, 
     'calendar': !!googleCalendarToken, 
     'crm': false
@@ -118,9 +135,10 @@ const App: React.FC = () => {
       ...prev,
       'google-ads': !!googleAdsToken,
       'calendar': !!googleCalendarToken,
-      'sheets': !!googleSheetsToken
+      'sheets': !!googleSheetsToken,
+      'wpp': !!whatsappConfig?.isConnected
     }));
-  }, [googleAdsToken, googleCalendarToken, googleSheetsToken]);
+  }, [googleAdsToken, googleCalendarToken, googleSheetsToken, whatsappConfig]);
 
   // --- DATA FETCHING FUNCTIONS ---
   const fetchFinancials = useCallback(async () => {
@@ -165,7 +183,11 @@ const App: React.FC = () => {
             ...d, 
             potentialValue: Number(d.potential_value), 
             lastMessage: d.last_message, 
-            lastInteraction: '1d' 
+            lastInteraction: '1d',
+            email: d.email,
+            procedure: d.procedure,
+            notes: d.notes,
+            source: d.source
         }));
         setLeads(mapped);
       }
@@ -303,7 +325,6 @@ const App: React.FC = () => {
     }
   };
 
-  // LOGOUT ROBUSTO (TRY/FINALLY)
   const logout = async () => { 
     try {
         await supabase!.auth.signOut(); 
@@ -314,6 +335,7 @@ const App: React.FC = () => {
         setGoogleAdsToken(null);
         setGoogleCalendarToken(null);
         setGoogleSheetsToken(null);
+        setWhatsappConfig(null);
         setUser(null);
         setIsAuthenticated(false); 
     }
@@ -371,8 +393,17 @@ const App: React.FC = () => {
     setLeads(prev => [newLead, ...prev]);
 
     const { error } = await supabase!.from('leads').insert([{
-        user_id: user.id, name: lead.name, phone: lead.phone, status: lead.status,
-        temperature: lead.temperature, last_message: lead.lastMessage, potential_value: lead.potentialValue
+        user_id: user.id, 
+        name: lead.name, 
+        phone: lead.phone, 
+        status: lead.status,
+        temperature: lead.temperature, 
+        last_message: lead.lastMessage, 
+        potential_value: lead.potentialValue,
+        source: lead.source,
+        email: lead.email,        // NEW
+        procedure: lead.procedure, // NEW
+        notes: lead.notes          // NEW
     }]);
 
     if (error) setLeads(prev => prev.filter(l => l.id !== tempId));
@@ -381,8 +412,16 @@ const App: React.FC = () => {
   const updateLead = async (lead: Lead) => {
     setLeads(prev => prev.map(l => l.id === lead.id ? lead : l));
     const { error } = await supabase!.from('leads').update({
-        name: lead.name, phone: lead.phone, status: lead.status,
-        temperature: lead.temperature, last_message: lead.lastMessage, potential_value: lead.potentialValue
+        name: lead.name, 
+        phone: lead.phone, 
+        status: lead.status,
+        temperature: lead.temperature, 
+        last_message: lead.lastMessage, 
+        potential_value: lead.potentialValue,
+        source: lead.source,
+        email: lead.email,         // NEW
+        procedure: lead.procedure, // NEW
+        notes: lead.notes          // NEW
     }).eq('id', lead.id);
     
     if (error) fetchLeads();
@@ -494,6 +533,8 @@ const App: React.FC = () => {
       googleCalendarToken, setGoogleCalendarToken,
       googleAdsToken, setGoogleAdsToken,
       googleSheetsToken, setGoogleSheetsToken,
+      
+      whatsappConfig, setWhatsappConfig,
 
       toggleIntegration, 
       dateFilter, setDateFilter, metrics: consolidatedMetrics,

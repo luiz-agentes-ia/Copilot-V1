@@ -4,20 +4,26 @@ import {
   MessageCircle, Clock, CheckCircle2, Search, Send, User, Users, Flame, 
   ArrowUpDown, AlertCircle, HandCoins, Receipt, DollarSign, ArrowUpRight, 
   Sparkles, Loader2, Network, Activity, Timer, ArrowRight, ArrowDownRight,
-  Calendar, Stethoscope, UserX, Target, Zap, ChevronDown
+  Calendar, Stethoscope, UserX, Target, Zap, ChevronDown, Mail, Info,
+  Smartphone
 } from 'lucide-react';
 import { analyzeLeadConversation } from '../services/geminiService';
+import { sendMessage } from '../services/whatsappService';
 import { useApp } from '../App';
 import { Lead } from '../types';
 
 const Sales: React.FC = () => {
-  const { dateFilter, setDateFilter, metrics, leads, addLead, updateLead, addFinancialEntry, user } = useApp();
+  const { dateFilter, setDateFilter, metrics, leads, addLead, updateLead, addFinancialEntry, user, whatsappConfig } = useApp();
   const [activeLead, setActiveLead] = useState<Lead | null>(null);
   const [activeTab, setActiveTab] = useState<'chat' | 'stats'>('stats');
   const [aiAnalysis, setAiAnalysis] = useState<string | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [newLeadName, setNewLeadName] = useState('');
   const [newLeadPhone, setNewLeadPhone] = useState('');
+  
+  // State do chat
+  const [messageText, setMessageText] = useState('');
+  const [sendingMsg, setSendingMsg] = useState(false);
 
   // Seleciona o primeiro lead automaticamente se houver e nenhum estiver selecionado
   useMemo(() => {
@@ -114,6 +120,44 @@ const Sales: React.FC = () => {
        }
     }
   };
+  
+  const handleSendMessage = async (e: React.FormEvent) => {
+      e.preventDefault();
+      if (!activeLead || !messageText.trim()) return;
+
+      const text = messageText;
+      setMessageText('');
+
+      // Se tiver configuração conectada (agora usando nome da instância do contexto)
+      if (whatsappConfig?.isConnected && whatsappConfig.instanceName) {
+          setSendingMsg(true);
+          try {
+             await sendMessage(whatsappConfig.instanceName, activeLead.phone, text);
+             // Atualiza histórico localmente para feedback visual (realtime deve atualizar depois)
+             await updateLead({
+                 ...activeLead,
+                 lastMessage: `Você: ${text}`,
+                 lastInteraction: 'Agora',
+                 status: activeLead.status === 'Novo' ? 'Conversa' : activeLead.status
+             });
+          } catch (error) {
+             alert('Erro ao enviar mensagem via API. Tentando fallback Web...');
+             window.open(`https://wa.me/55${activeLead.phone}?text=${encodeURIComponent(text)}`, '_blank');
+          } finally {
+             setSendingMsg(false);
+          }
+      } else {
+          // Fallback padrão: WhatsApp Web Link
+          window.open(`https://wa.me/55${activeLead.phone}?text=${encodeURIComponent(text)}`, '_blank');
+          
+          await updateLead({
+             ...activeLead,
+             lastMessage: `Você (Web): ${text}`,
+             lastInteraction: 'Agora',
+             status: activeLead.status === 'Novo' ? 'Conversa' : activeLead.status
+          });
+      }
+  };
 
   return (
     <div className="space-y-6 h-[calc(100vh-140px)] flex flex-col">
@@ -174,10 +218,14 @@ const Sales: React.FC = () => {
                       <h4 className="text-xs font-semibold text-navy truncate">{lead.name}</h4>
                       <span className="text-[9px] text-slate-400 font-medium">{lead.lastInteraction}</span>
                     </div>
-                    <p className="text-[11px] text-slate-500 truncate mb-1.5 font-light">{lead.lastMessage}</p>
+                    
+                    <p className="text-[11px] text-slate-500 truncate mb-1.5 font-light">
+                        {lead.procedure ? `Interesse: ${lead.procedure}` : (lead.lastMessage || 'Novo lead')}
+                    </p>
+                    
                     <div className="flex items-center gap-2">
                        <span className={`px-2 py-0.5 rounded text-[8px] font-bold uppercase tracking-wider ${lead.temperature === 'Hot' ? 'bg-orange-100 text-orange-600' : 'bg-blue-100 text-blue-600'}`}>{lead.temperature}</span>
-                       <span className="px-2 py-0.5 rounded text-[8px] font-bold uppercase tracking-wider bg-slate-100 text-slate-500">R$ {lead.potentialValue}</span>
+                       <span className="px-2 py-0.5 rounded text-[8px] font-bold uppercase tracking-wider bg-slate-100 text-slate-500">{lead.source || 'Manual'}</span>
                     </div>
                   </div>
                 </button>
@@ -193,19 +241,22 @@ const Sales: React.FC = () => {
                     <div className="w-10 h-10 bg-navy rounded-xl flex items-center justify-center text-white shrink-0"><User size={20} /></div>
                     <div>
                         <h3 className="font-semibold text-navy text-sm leading-tight">{activeLead.name}</h3>
-                        <div className="relative inline-block mt-1">
-                            <select 
-                                value={activeLead.status} 
-                                onChange={handleStatusChange}
-                                className="appearance-none bg-emerald-50 text-emerald-600 font-bold text-[9px] uppercase tracking-widest pl-2 pr-6 py-0.5 rounded cursor-pointer hover:bg-emerald-100 transition-colors focus:outline-none"
-                            >
-                                <option value="Novo">Novo Lead</option>
-                                <option value="Conversa">Em Conversa</option>
-                                <option value="Agendado">Agendado</option>
-                                <option value="Venda">Venda Fechada ($)</option>
-                                <option value="Perdido">Perdido</option>
-                            </select>
-                            <ChevronDown size={10} className="absolute right-1 top-1/2 -translate-y-1/2 text-emerald-600 pointer-events-none" />
+                        <div className="flex items-center gap-2 mt-1">
+                             <div className="relative inline-block">
+                                <select 
+                                    value={activeLead.status} 
+                                    onChange={handleStatusChange}
+                                    className="appearance-none bg-emerald-50 text-emerald-600 font-bold text-[9px] uppercase tracking-widest pl-2 pr-6 py-0.5 rounded cursor-pointer hover:bg-emerald-100 transition-colors focus:outline-none"
+                                >
+                                    <option value="Novo">Novo Lead</option>
+                                    <option value="Conversa">Em Conversa</option>
+                                    <option value="Agendado">Agendado</option>
+                                    <option value="Venda">Venda Fechada ($)</option>
+                                    <option value="Perdido">Perdido</option>
+                                </select>
+                                <ChevronDown size={10} className="absolute right-1 top-1/2 -translate-y-1/2 text-emerald-600 pointer-events-none" />
+                            </div>
+                            {activeLead.email && <span className="text-[9px] text-slate-400 flex items-center gap-1"><Mail size={10}/> {activeLead.email}</span>}
                         </div>
                     </div>
                 </div>
@@ -213,20 +264,55 @@ const Sales: React.FC = () => {
                     {isAnalyzing ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />} Raio-X da IA
                 </button>
                 </div>
-                <div className="flex-1 bg-slate-50/50 p-6 overflow-y-auto">
+                <div className="flex-1 bg-slate-50/50 p-6 overflow-y-auto space-y-4">
                     {aiAnalysis ? (
-                        <div className="mb-4 bg-indigo-50 border border-indigo-100 p-4 rounded-xl text-xs text-indigo-900 leading-relaxed whitespace-pre-line">
+                        <div className="bg-indigo-50 border border-indigo-100 p-4 rounded-xl text-xs text-indigo-900 leading-relaxed whitespace-pre-line animate-in fade-in slide-in-from-bottom-2">
                             <strong>Análise IA:</strong><br/>{aiAnalysis}
                         </div>
                     ) : null}
+                    
+                    {(activeLead.procedure || activeLead.notes || activeLead.source) && (
+                        <div className="bg-white p-4 rounded-xl border border-slate-100 shadow-sm space-y-2">
+                            <h4 className="text-[10px] font-bold text-slate-400 uppercase flex items-center gap-1"><Info size={12}/> Detalhes do Lead</h4>
+                            <div className="grid grid-cols-2 gap-4">
+                                {activeLead.procedure && <div><span className="text-[9px] text-slate-400 block">Interesse:</span> <span className="text-xs font-semibold text-navy">{activeLead.procedure}</span></div>}
+                                {activeLead.source && <div><span className="text-[9px] text-slate-400 block">Origem:</span> <span className="text-xs font-semibold text-navy">{activeLead.source}</span></div>}
+                            </div>
+                            {activeLead.notes && (
+                                <div className="pt-2 border-t border-slate-50">
+                                    <span className="text-[9px] text-slate-400 block">Notas:</span>
+                                    <p className="text-xs text-slate-600 italic">{activeLead.notes}</p>
+                                </div>
+                            )}
+                        </div>
+                    )}
+
                     <div className="max-w-[70%] bg-white p-4 rounded-2xl rounded-tl-none shadow-sm border border-slate-100">
                         <p className="text-sm text-slate-700 leading-relaxed font-light">{activeLead.lastMessage || 'Nenhuma mensagem.'}</p>
                     </div>
                 </div>
-                <div className="p-4 bg-white border-t border-slate-100 flex gap-3">
-                <input type="text" placeholder="Escreva sua mensagem..." className="flex-1 pl-4 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-medium focus:outline-none text-navy placeholder:text-slate-400" />
-                <button className="p-3 bg-navy text-white rounded-xl shadow-lg hover:scale-105 transition-all"><Send size={20} /></button>
-                </div>
+                
+                <form onSubmit={handleSendMessage} className="p-4 bg-white border-t border-slate-100 flex gap-3 items-center">
+                    <input 
+                        type="text" 
+                        value={messageText}
+                        onChange={e => setMessageText(e.target.value)}
+                        placeholder="Escreva sua mensagem..." 
+                        className="flex-1 pl-4 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-medium focus:outline-none text-navy placeholder:text-slate-400" 
+                    />
+                    <button 
+                        type="submit" 
+                        disabled={sendingMsg || !messageText.trim()}
+                        className={`p-3 rounded-xl shadow-lg transition-all flex items-center justify-center ${sendingMsg ? 'bg-slate-300' : 'bg-navy text-white hover:scale-105'}`}
+                    >
+                        {sendingMsg ? <Loader2 size={20} className="animate-spin text-white"/> : <Send size={20} />}
+                    </button>
+                    {whatsappConfig?.isConnected ? (
+                        <div title="API Conectada" className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></div>
+                    ) : (
+                        <div title="Envio via Link (Web)" className="w-2 h-2 rounded-full bg-slate-300"></div>
+                    )}
+                </form>
             </>
             ) : (
                 <div className="flex-1 flex items-center justify-center text-slate-400 text-sm">Selecione um lead para ver a conversa</div>
