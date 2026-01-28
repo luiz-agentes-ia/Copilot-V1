@@ -19,7 +19,10 @@ import {
   DownloadCloud,
   ChevronRight,
   Table,
-  FileDown
+  FileDown,
+  ArrowLeft,
+  LayoutList,
+  Files
 } from 'lucide-react';
 import { useApp } from '../App';
 import { signInWithGoogleAds, getAccessibleCustomers } from '../services/googleAdsService';
@@ -48,7 +51,6 @@ const Integration: React.FC = () => {
   const [activeGuideTab, setActiveGuideTab] = useState<'google' | 'supabase'>('google');
   
   const currentOrigin = window.location.origin; 
-  const currentRedirectUrl = (window.location.origin + window.location.pathname).replace(/\/$/, "");
   const supabaseProjectUrl = (import.meta as any).env?.VITE_SUPABASE_URL || 'https://seu-projeto.supabase.co';
   const supabaseCallbackUrl = `${supabaseProjectUrl}/auth/v1/callback`;
 
@@ -60,12 +62,13 @@ const Integration: React.FC = () => {
   const [showManualInput, setShowManualInput] = useState(false);
 
   // States Google Sheets Import
-  const [isImporting, setIsImporting] = useState(false);
+  const [importStep, setImportStep] = useState<number>(0); // 0: Idle, 1: Files, 2: Tabs, 3: Confirm
   const [spreadsheets, setSpreadsheets] = useState<any[]>([]);
-  const [selectedSpreadsheet, setSelectedSpreadsheet] = useState<string>('');
+  const [selectedSpreadsheet, setSelectedSpreadsheet] = useState<{id: string, name: string} | null>(null);
   const [sheetTabs, setSheetTabs] = useState<string[]>([]);
   const [selectedTab, setSelectedTab] = useState<string>('');
   const [importStatus, setImportStatus] = useState<string>('');
+  const [importLoading, setImportLoading] = useState(false);
 
   // --- EFEITOS E HANDLERS ---
   useEffect(() => {
@@ -176,63 +179,73 @@ const Integration: React.FC = () => {
       window.location.reload();
   }
 
-  // --- SHEETS IMPORT LOGIC ---
+  // --- SHEETS IMPORT LOGIC (WIZARD) ---
+  
+  // Passo 1: Listar Arquivos
   const startImportFlow = async () => {
       if (!googleSheetsToken) return;
-      setIsImporting(true);
-      setImportStatus('Buscando planilhas...');
+      setImportStep(1); // Vai para seleção de arquivo
+      setImportLoading(true);
+      setImportStatus('Buscando seus arquivos no Google Drive...');
+      
       try {
           const files = await listSpreadsheets(googleSheetsToken);
           setSpreadsheets(files);
+          setImportLoading(false);
           setImportStatus('');
+          
+          if (files.length === 0) {
+              setImportStatus('Nenhuma planilha encontrada no seu Drive.');
+          }
       } catch (err) {
-          setImportStatus('Erro: Tente reconectar a conta (Permissão Drive).');
+          setImportLoading(false);
+          setImportStatus('Erro de permissão. Por favor, reconecte a conta.');
           console.error(err);
       }
   };
 
-  const downloadTemplate = () => {
-      const csvContent = "data:text/csv;charset=utf-8,Nome,Telefone,Status,Valor\nJoão Silva,11999999999,Novo,100\nMaria Souza,21988888888,Agendado,200";
-      const encodedUri = encodeURI(csvContent);
-      const link = document.createElement("a");
-      link.setAttribute("href", encodedUri);
-      link.setAttribute("download", "modelo_leads_copilot.csv");
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-  };
-
-  const handleSpreadsheetSelect = async (id: string) => {
-      setSelectedSpreadsheet(id);
-      setSelectedTab('');
+  // Passo 2: Listar Abas
+  const handleSpreadsheetSelect = async (file: {id: string, name: string}) => {
+      setSelectedSpreadsheet(file);
+      setImportStep(2); // Vai para seleção de aba
+      setImportLoading(true);
       setSheetTabs([]);
-      setImportStatus('Buscando abas...');
+      setImportStatus('Lendo abas da planilha...');
+
       try {
           if (!googleSheetsToken) throw new Error("Token invalido");
-          const tabs = await getSpreadsheetDetails(googleSheetsToken, id);
+          const tabs = await getSpreadsheetDetails(googleSheetsToken, file.id);
           setSheetTabs(tabs);
+          setImportLoading(false);
           setImportStatus('');
       } catch (err) {
+          setImportLoading(false);
           setImportStatus('Erro ao ler detalhes da planilha.');
       }
   };
 
+  // Passo 3: Selecionar Aba e Confirmar
+  const handleTabSelect = (tab: string) => {
+      setSelectedTab(tab);
+      setImportStep(3); // Vai para confirmação
+  };
+
+  // Passo 4: Processar
   const processImport = async () => {
       if (!googleSheetsToken || !selectedSpreadsheet || !selectedTab) return;
+      setImportLoading(true);
       setImportStatus('Importando dados... (Isso pode levar alguns segundos)');
       
       try {
-          const rows = await getSheetData(googleSheetsToken, selectedSpreadsheet, selectedTab);
+          const rows = await getSheetData(googleSheetsToken, selectedSpreadsheet.id, selectedTab);
           
           if (!rows || rows.length < 2) {
               setImportStatus('A planilha parece vazia ou sem cabeçalho.');
+              setImportLoading(false);
               return;
           }
 
-          // Identificar cabeçalhos (Linha 0)
           const headers = rows[0].map((h: string) => h.toLowerCase().trim());
-          
-          // Mapeamento Flexível
           const nameIndex = headers.findIndex((h: string) => h.includes('nome') || h.includes('cliente') || h.includes('paciente') || h.includes('name'));
           const phoneIndex = headers.findIndex((h: string) => h.includes('tel') || h.includes('cel') || h.includes('phone') || h.includes('whatsapp') || h.includes('contato'));
           const statusIndex = headers.findIndex((h: string) => h.includes('status') || h.includes('fase'));
@@ -240,23 +253,21 @@ const Integration: React.FC = () => {
 
           if (nameIndex === -1 || phoneIndex === -1) {
               setImportStatus('Erro: Cabeçalho inválido. Certifique-se de ter as colunas "Nome" e "Telefone".');
+              setImportLoading(false);
               return;
           }
 
           let importedCount = 0;
-
-          // Processar linhas (A partir da linha 1)
           for (let i = 1; i < rows.length; i++) {
               const row = rows[i];
               const name = row[nameIndex];
               const phone = row[phoneIndex];
 
               if (name && phone) {
-                  // Insere no Supabase via addLead (do AppContext)
                   await addLead({
-                      id: '', // Gerado pelo addLead
+                      id: '',
                       name: name,
-                      phone: phone.replace(/\D/g, ''), // Limpa telefone
+                      phone: phone.replace(/\D/g, ''),
                       status: statusIndex !== -1 ? (row[statusIndex] || 'Novo') : 'Novo',
                       temperature: 'Cold',
                       lastMessage: 'Importado via Planilha',
@@ -269,15 +280,29 @@ const Integration: React.FC = () => {
 
           setImportStatus(`Sucesso! ${importedCount} leads importados.`);
           setTimeout(() => {
-              setIsImporting(false);
+              setImportStep(0);
               setImportStatus('');
-              setSelectedSpreadsheet('');
-          }, 3000);
+              setSelectedSpreadsheet(null);
+              setSelectedTab('');
+              setImportLoading(false);
+          }, 2500);
 
       } catch (err) {
           console.error(err);
           setImportStatus('Erro ao processar importação.');
+          setImportLoading(false);
       }
+  };
+
+  const downloadTemplate = () => {
+      const csvContent = "data:text/csv;charset=utf-8,Nome,Telefone,Status,Valor\nJoão Silva,11999999999,Novo,100\nMaria Souza,21988888888,Agendado,200";
+      const encodedUri = encodeURI(csvContent);
+      const link = document.createElement("a");
+      link.setAttribute("href", encodedUri);
+      link.setAttribute("download", "modelo_leads_copilot.csv");
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
   };
 
   const copyToClipboard = (text: string, id: string) => {
@@ -441,8 +466,9 @@ const Integration: React.FC = () => {
             
             {googleSheetsToken ? (
                <div className="mt-auto space-y-3">
-                  {!isImporting ? (
-                      <div className="space-y-2">
+                  {/* ESTADO 0: MENU INICIAL */}
+                  {importStep === 0 && (
+                      <div className="space-y-2 animate-in fade-in">
                           <button onClick={startImportFlow} className="w-full py-3 bg-emerald-600 text-white rounded-xl font-black text-[10px] uppercase tracking-widest shadow-lg hover:bg-emerald-700 transition-all flex items-center justify-center gap-2">
                               <DownloadCloud size={14} /> Importar Leads
                           </button>
@@ -450,64 +476,79 @@ const Integration: React.FC = () => {
                               <FileDown size={12} /> Baixar Modelo CSV
                           </button>
                       </div>
-                  ) : (
-                      <div className="p-3 bg-emerald-50 rounded-xl border border-emerald-100 space-y-3 animate-in fade-in">
-                          
-                          {/* INSTRUÇÕES VISUAIS PARA O FORMATO DA PLANILHA */}
-                          <div className="bg-white p-3 rounded-lg border border-emerald-100 mb-2">
-                              <p className="text-[9px] font-bold text-navy uppercase mb-2 flex items-center gap-1">
-                                  <Table size={12} className="text-emerald-600"/> Modelo Obrigatório
-                              </p>
-                              <p className="text-[9px] text-slate-500 mb-2 leading-relaxed">
-                                  Sua planilha <strong>precisa</strong> ter uma linha de cabeçalho com os nomes exatos abaixo para funcionar:
-                              </p>
-                              <div className="grid grid-cols-4 gap-1 text-[8px] font-mono text-center">
-                                   <div className="bg-slate-100 p-1 rounded border border-slate-200 text-navy font-bold">Nome</div>
-                                   <div className="bg-slate-100 p-1 rounded border border-slate-200 text-navy font-bold">Telefone</div>
-                                   <div className="bg-slate-50 p-1 rounded border border-slate-100 text-slate-400">Status</div>
-                                   <div className="bg-slate-50 p-1 rounded border border-slate-100 text-slate-400">Valor</div>
-                              </div>
+                  )}
+
+                  {/* ESTADO 1: LISTA DE ARQUIVOS */}
+                  {importStep === 1 && (
+                      <div className="p-3 bg-emerald-50 rounded-xl border border-emerald-100 animate-in fade-in slide-in-from-right-4">
+                          <div className="flex items-center justify-between mb-2 pb-2 border-b border-emerald-200/50">
+                             <span className="text-[10px] font-bold text-emerald-800 uppercase flex items-center gap-1"><Files size={12}/> Escolha o Arquivo:</span>
+                             <button onClick={() => setImportStep(0)} className="text-emerald-600 hover:bg-emerald-200 p-1 rounded-full"><ArrowLeft size={12}/></button>
                           </div>
-
-                          <p className={`text-[10px] font-bold ${importStatus.includes('Erro') ? 'text-rose-600 bg-rose-50 p-2 rounded border border-rose-100' : 'text-emerald-800'}`}>
-                            {importStatus || 'Selecione o arquivo:'}
-                          </p>
                           
-                          {/* 1. Seleção de Planilha */}
-                          {spreadsheets.length > 0 && !selectedSpreadsheet && (
-                              <div className="max-h-32 overflow-y-auto custom-scrollbar space-y-1">
-                                  {spreadsheets.map(file => (
-                                      <button key={file.id} onClick={() => handleSpreadsheetSelect(file.id)} className="w-full text-left px-2 py-1.5 hover:bg-emerald-100 rounded text-xs text-navy truncate block">
-                                          {file.name}
-                                      </button>
-                                  ))}
-                              </div>
-                          )}
-
-                          {/* 2. Seleção de Aba */}
-                          {selectedSpreadsheet && sheetTabs.length > 0 && !selectedTab && (
-                              <div className="space-y-2">
-                                  <p className="text-[9px] text-slate-400 uppercase font-bold">Selecione a Aba:</p>
-                                  <div className="max-h-24 overflow-y-auto custom-scrollbar space-y-1">
-                                      {sheetTabs.map(tab => (
-                                          <button key={tab} onClick={() => setSelectedTab(tab)} className="w-full text-left px-2 py-1.5 hover:bg-emerald-100 rounded text-xs text-navy truncate block">
-                                              {tab}
-                                          </button>
-                                      ))}
-                                  </div>
-                              </div>
-                          )}
-
-                          {/* 3. Confirmação e Aviso de Formato */}
-                          {selectedSpreadsheet && selectedTab && (
-                             <div className="space-y-3">
-                                <button onClick={processImport} className="w-full py-2 bg-emerald-600 text-white rounded-lg text-xs font-bold hover:bg-emerald-700 transition-colors">
-                                   Processar Importação
-                                </button>
+                          {importLoading ? (
+                             <div className="flex flex-col items-center py-4 text-emerald-600"><Loader2 size={16} className="animate-spin mb-1"/> <span className="text-[9px]">Buscando...</span></div>
+                          ) : importStatus.includes("Erro") ? (
+                             <div className="text-center py-2">
+                                <p className="text-[10px] font-bold text-rose-500 mb-2">{importStatus}</p>
+                                <button onClick={handleSheetsLogout} className="text-[9px] underline text-rose-600">Reconectar Conta</button>
+                             </div>
+                          ) : (
+                             <div className="max-h-40 overflow-y-auto custom-scrollbar space-y-1">
+                                {spreadsheets.map(file => (
+                                   <button key={file.id} onClick={() => handleSpreadsheetSelect(file)} className="w-full text-left px-2 py-2 hover:bg-white rounded-lg text-xs text-emerald-900 border border-transparent hover:border-emerald-200 transition-all flex items-center gap-2">
+                                      <FileSpreadsheet size={14} className="text-emerald-500 shrink-0"/> <span className="truncate">{file.name}</span>
+                                   </button>
+                                ))}
                              </div>
                           )}
+                      </div>
+                  )}
 
-                          <button onClick={() => { setIsImporting(false); setSelectedSpreadsheet(''); }} className="text-[9px] text-slate-400 hover:text-navy underline w-full text-center">Cancelar</button>
+                  {/* ESTADO 2: LISTA DE ABAS */}
+                  {importStep === 2 && (
+                      <div className="p-3 bg-emerald-50 rounded-xl border border-emerald-100 animate-in fade-in slide-in-from-right-4">
+                          <div className="flex items-center justify-between mb-2 pb-2 border-b border-emerald-200/50">
+                             <div className="overflow-hidden">
+                                <span className="text-[9px] font-bold text-slate-400 uppercase block">Arquivo:</span>
+                                <span className="text-[10px] font-bold text-emerald-800 truncate block">{selectedSpreadsheet?.name}</span>
+                             </div>
+                             <button onClick={() => setImportStep(1)} className="text-emerald-600 hover:bg-emerald-200 p-1 rounded-full shrink-0"><ArrowLeft size={12}/></button>
+                          </div>
+                          <p className="text-[9px] font-bold text-emerald-700 mb-2 flex items-center gap-1"><LayoutList size={10}/> Selecione a Aba:</p>
+
+                          {importLoading ? (
+                             <div className="flex flex-col items-center py-4 text-emerald-600"><Loader2 size={16} className="animate-spin mb-1"/> <span className="text-[9px]">Lendo abas...</span></div>
+                          ) : (
+                             <div className="max-h-32 overflow-y-auto custom-scrollbar space-y-1">
+                                {sheetTabs.map(tab => (
+                                   <button key={tab} onClick={() => handleTabSelect(tab)} className="w-full text-left px-2 py-2 hover:bg-white rounded-lg text-xs text-emerald-900 border border-transparent hover:border-emerald-200 transition-all flex items-center gap-2">
+                                      <Table size={14} className="text-emerald-500 shrink-0"/> <span className="truncate">{tab}</span>
+                                   </button>
+                                ))}
+                             </div>
+                          )}
+                      </div>
+                  )}
+
+                  {/* ESTADO 3: CONFIRMAÇÃO */}
+                  {importStep === 3 && (
+                      <div className="p-3 bg-emerald-50 rounded-xl border border-emerald-100 animate-in fade-in slide-in-from-right-4 space-y-3">
+                          <div className="flex items-center justify-between mb-1">
+                             <span className="text-[10px] font-bold text-emerald-800 uppercase">Confirmar Importação</span>
+                             <button onClick={() => setImportStep(2)} className="text-emerald-600 hover:bg-emerald-200 p-1 rounded-full"><ArrowLeft size={12}/></button>
+                          </div>
+                          
+                          <div className="bg-white p-2 rounded border border-emerald-100 text-[10px]">
+                              <p><span className="font-bold text-slate-400">Arquivo:</span> <span className="text-navy">{selectedSpreadsheet?.name}</span></p>
+                              <p><span className="font-bold text-slate-400">Aba:</span> <span className="text-navy">{selectedTab}</span></p>
+                          </div>
+
+                          {importStatus && <p className="text-[10px] font-bold text-emerald-600 text-center animate-pulse">{importStatus}</p>}
+
+                          <button onClick={processImport} disabled={importLoading} className="w-full py-2 bg-emerald-600 text-white rounded-lg text-xs font-bold hover:bg-emerald-700 transition-colors shadow-sm flex items-center justify-center gap-2">
+                             {importLoading ? <Loader2 size={14} className="animate-spin"/> : <CheckCircle2 size={14}/>} Confirmar e Processar
+                          </button>
                       </div>
                   )}
 
