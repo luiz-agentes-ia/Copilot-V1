@@ -34,7 +34,7 @@ const safeFetch = async (url: string, options: any) => {
     return data;
 };
 
-// 1. Iniciar conexão (backend inicia Baileys e retorna base64 se tiver)
+// 1. Iniciar conexão (backend chama Evolution e retorna base64 se tiver)
 export const initInstance = async (userId: string, clinicName: string) => {
     return safeFetch(`${API_BASE}/init`, {
         method: 'POST',
@@ -43,7 +43,7 @@ export const initInstance = async (userId: string, clinicName: string) => {
     });
 };
 
-// 2. Verificar Status (Agora o backend retorna o base64 atualizado se estiver pendente)
+// 2. Verificar Status
 export const checkStatus = async (instanceName: string) => {
     try {
         const data = await safeFetch(`${API_BASE}/status`, {
@@ -52,13 +52,13 @@ export const checkStatus = async (instanceName: string) => {
             body: JSON.stringify({ instanceName })
         });
         
-        const state = data?.instance?.state || 'disconnected';
+        const state = data?.instance?.state || 'close';
         const isConnected = state === 'open';
 
         return { 
             status: isConnected ? 'CONNECTED' : 'DISCONNECTED',
             state: state,
-            base64: data.base64 // Retorna QR se houver
+            base64: data.base64 // Retorna QR se houver, vindo da Evolution
         };
     } catch (error) {
         // Retorna status de erro silencioso para polling não quebrar a UI inteira
@@ -66,7 +66,7 @@ export const checkStatus = async (instanceName: string) => {
     }
 };
 
-// 3. Enviar Mensagem (Direto via Socket no backend)
+// 3. Enviar Mensagem (Direto via Evolution Proxy)
 export const sendMessage = async (instanceName: string, phone: string, text: string) => {
     // Limpeza básica do telefone (Brasil)
     let cleanPhone = phone.replace(/\D/g, '');
@@ -83,9 +83,12 @@ export const sendMessage = async (instanceName: string, phone: string, text: str
 
 // 4. Logout
 export const logoutInstance = async (userId: string) => {
+    // Precisamos do nome da instância para logout na Evolution
+    const instanceName = `copilot_${userId.replace(/-/g, '')}`;
+    
     return safeFetch(`${API_BASE}/logout`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ userId })
+        body: JSON.stringify({ userId, instanceName })
     });
 };

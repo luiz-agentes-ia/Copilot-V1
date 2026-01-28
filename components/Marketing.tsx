@@ -28,19 +28,20 @@ const Marketing: React.FC = () => {
   // States para dados reais
   const [realGoogleCampaigns, setRealGoogleCampaigns] = useState<any[]>([]);
 
-  const isConnected = !!googleAdsToken;
+  // Recupera o ID da conta selecionada (MCC ou Cliente)
+  const selectedAccountId = localStorage.getItem('selected_google_account_id');
+  const isConnected = !!googleAdsToken && !!selectedAccountId;
+  
   const DEV_TOKEN = (import.meta as any)?.env?.VITE_GOOGLE_ADS_DEV_TOKEN || 'SEU_DEVELOPER_TOKEN_AQUI';
 
   // --- BUSCA DADOS REAIS GOOGLE ---
   useEffect(() => {
     const fetchGoogleData = async () => {
-        if (googleAdsToken) {
+        if (googleAdsToken && selectedAccountId) {
             setLoading(true);
-            const accountId = localStorage.getItem('selected_google_account_id');
-            if (!accountId) { setRealGoogleCampaigns([]); setLoading(false); return; }
-
             try {
-                const results = await getGoogleCampaigns(accountId, googleAdsToken, DEV_TOKEN, { start: dateFilter.start, end: dateFilter.end });
+                // Passa explicitamente o ID da conta selecionada
+                const results = await getGoogleCampaigns(selectedAccountId, googleAdsToken, DEV_TOKEN, { start: dateFilter.start, end: dateFilter.end });
                 const mappedCampaigns = results.map((row: any) => ({
                     name: row.campaign.name,
                     platform: 'google',
@@ -62,7 +63,7 @@ const Marketing: React.FC = () => {
         }
     };
     fetchGoogleData();
-  }, [googleAdsToken, dateFilter]);
+  }, [googleAdsToken, selectedAccountId, dateFilter]); // Adicionado selectedAccountId como dependência
 
 
   // --- CONSOLIDAÇÃO DE DADOS (API + FINANCEIRO) ---
@@ -114,8 +115,10 @@ const Marketing: React.FC = () => {
           <h2 className="text-2xl font-semibold text-navy tracking-tight">Performance de Tráfego Pago</h2>
           <div className="flex items-center gap-2 mt-1">
             <p className="text-xs text-slate-500 font-light italic">Monitoramento unificado (Google Ads & Financeiro).</p>
-            {isConnected && (
-               <span className="bg-emerald-50 text-emerald-700 text-[9px] font-bold px-2 py-0.5 rounded uppercase tracking-widest border border-emerald-100 flex items-center gap-1"><Zap size={8} fill="currentColor"/> Google Ads Conectado</span>
+            {isConnected ? (
+               <span className="bg-emerald-50 text-emerald-700 text-[9px] font-bold px-2 py-0.5 rounded uppercase tracking-widest border border-emerald-100 flex items-center gap-1"><Zap size={8} fill="currentColor"/> Conta Conectada: {selectedAccountId}</span>
+            ) : (
+                <span className="bg-amber-50 text-amber-700 text-[9px] font-bold px-2 py-0.5 rounded uppercase tracking-widest border border-amber-100 flex items-center gap-1"><AlertCircle size={8} /> Selecione uma conta em Conexões</span>
             )}
           </div>
         </div>
@@ -139,7 +142,7 @@ const Marketing: React.FC = () => {
               <div>
                   <h3 className="text-sm font-bold text-navy">Sem dados de campanha ativos.</h3>
                   <p className="text-xs text-slate-500 mt-1">
-                      Não encontramos gastos no Google Ads nem lançamentos de "Marketing" no Financeiro para o período ({dateFilter.label}).
+                      Não encontramos gastos no Google Ads (Conta {selectedAccountId}) nem lançamentos de "Marketing" no Financeiro para o período ({dateFilter.label}).
                   </p>
               </div>
           </div>
