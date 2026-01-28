@@ -197,9 +197,14 @@ const Integration: React.FC = () => {
           if (files.length === 0) {
               setImportStatus('Nenhuma planilha encontrada no seu Drive.');
           }
-      } catch (err) {
+      } catch (err: any) {
           setImportLoading(false);
-          setImportStatus('Erro de permissão. Por favor, reconecte a conta.');
+          // Se for erro 403, significa falta de permissão Drive.Readonly
+          if (err.message && (err.message.includes('403') || err.message.includes('permission'))) {
+             setImportStatus('Erro de permissão: Você precisa reconectar a conta e aceitar acesso ao Drive.');
+          } else {
+             setImportStatus('Erro ao buscar arquivos. Tente reconectar.');
+          }
           console.error(err);
       }
   };
@@ -272,7 +277,7 @@ const Integration: React.FC = () => {
                       temperature: 'Cold',
                       lastMessage: 'Importado via Planilha',
                       potentialValue: valueIndex !== -1 ? (parseFloat(row[valueIndex]) || user?.ticketValue) : user?.ticketValue,
-                      source: 'Google Sheets'
+                      source: 'Google Sheets' // Agora isso é válido
                   });
                   importedCount++;
               }
@@ -491,7 +496,7 @@ const Integration: React.FC = () => {
                           ) : importStatus.includes("Erro") ? (
                              <div className="text-center py-2">
                                 <p className="text-[10px] font-bold text-rose-500 mb-2">{importStatus}</p>
-                                <button onClick={handleSheetsLogout} className="text-[9px] underline text-rose-600">Reconectar Conta</button>
+                                <button onClick={handleSheetsLogout} className="text-[9px] underline text-rose-600 uppercase font-bold tracking-wider">Reconectar Conta</button>
                              </div>
                           ) : (
                              <div className="max-h-40 overflow-y-auto custom-scrollbar space-y-1">

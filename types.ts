@@ -38,8 +38,8 @@ export interface Lead {
   lastInteraction?: string;
   history?: string; // JSON ou Texto longo
   potentialValue?: number;
-  // Alterado para permitir string genérica, evitando erros de build ao adicionar novas fontes
-  source?: 'Instagram' | 'Google' | 'Indicação' | 'Google Sheets' | 'Manual' | string;
+  // Alterado para string para aceitar "Google Sheets" e evitar erro TS2322 no build
+  source?: string;
   created_at?: string;
 }
 
@@ -76,10 +76,10 @@ export interface Appointment {
   date: string;
   time: string;
   patientName: string;
-  // Alterado para string union + string para permitir "Google Calendar" sem erro de build
+  // Alterado para string para flexibilidade
   type: 'Avaliação' | 'Retorno' | 'Procedimento' | 'Cirurgia' | 'Google Calendar' | string;
   status: 'Confirmado' | 'Pendente' | 'Cancelado' | 'Realizado' | string;
-  isGoogle?: boolean; // Propriedade opcional adicionada para evitar erro TS2339
+  isGoogle?: boolean; 
 }
 
 // --- DASHBOARD AGGREGATES ---
