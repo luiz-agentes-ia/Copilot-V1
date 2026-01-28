@@ -38,7 +38,8 @@ export interface Lead {
   lastInteraction?: string;
   history?: string; // JSON ou Texto longo
   potentialValue?: number;
-  source?: 'Instagram' | 'Google' | 'Indicação';
+  // Alterado para permitir string genérica, evitando erros de build ao adicionar novas fontes
+  source?: 'Instagram' | 'Google' | 'Indicação' | 'Google Sheets' | 'Manual' | string;
   created_at?: string;
 }
 
