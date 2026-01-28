@@ -37,89 +37,115 @@ const safeJson = async (response) => {
 };
 
 // ==============================================================================
-// 1. ROTAS DE GERENCIAMENTO WHATSAPP
+// 1. ROTAS DE GERENCIAMENTO WHATSAPP (EVOLUTION API)
 // ==============================================================================
 
 app.post('/api/whatsapp/init', async (req, res) => {
   const { userId, clinicName } = req.body;
   
+  // Sanitiza o nome da instância (Evolution não aceita alguns caracteres)
   const instanceName = `user_${userId.replace(/[^a-zA-Z0-9]/g, '')}`;
-  console.log(`[Manager] Iniciando: ${instanceName}`);
+  console.log(`[Manager] Iniciando Instância: ${instanceName}`);
 
   try {
-    // 1. Verifica se a instância já existe na Evolution
-    console.log(`[Manager] Checando instância na Evolution: ${EVO_URL}`);
-    const checkRes = await fetch(`${EVO_URL}/instance/connectionState/${instanceName}`, {
-       headers: { 'apikey': EVO_GLOBAL_KEY }
-    });
-    
-    // Se o fetch falhar (ex: URL errada), vai pro catch
-
-    let createData = {};
-    // 2. Se não existe (404), cria uma nova
-    if (checkRes.status === 404) {
-       console.log(`[Manager] Instância 404. Criando...`);
-       
-       const webhookUrl = `${APP_BASE_URL}/api/webhooks/whatsapp`;
-       const createRes = await fetch(`${EVO_URL}/instance/create`, {
-          method: 'POST',
-          headers: { 
-            'apikey': EVO_GLOBAL_KEY,
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify({
-             instanceName: instanceName,
-             token: userId,
-             qrcode: true,
-             webhook: webhookUrl,
-             webhook_by_events: true,
-             events: ["MESSAGES_UPSERT", "CONNECTION_UPDATE"]
-          })
-       });
-       
-       if (!createRes.ok) {
-           const errText = await createRes.text();
-           console.error(`[Manager] Erro Criação: ${errText}`);
-           throw new Error(`Falha ao criar instância: ${createRes.status}`);
-       }
-       
-       // Captura dados da criação (pode conter o QR Code em algumas versões)
-       createData = await safeJson(createRes);
+    // 1. Verificar Status Atual na Evolution
+    let currentState = 'disconnected';
+    try {
+        const checkRes = await fetch(`${EVO_URL}/instance/connectionState/${instanceName}`, {
+           headers: { 'apikey': EVO_GLOBAL_KEY }
+        });
+        if (checkRes.ok) {
+            const checkData = await safeJson(checkRes);
+            currentState = checkData?.instance?.state || 'disconnected';
+        }
+    } catch (e) {
+        console.warn('[Manager] Falha ao checar status inicial, assumindo desconectado.');
     }
 
-    // 3. Conecta
-    const connectRes = await fetch(`${EVO_URL}/instance/connect/${instanceName}`, {
+    // 2. Se JÁ ESTIVER CONECTADO (open), apenas retorna sucesso e atualiza DB
+    if (currentState === 'open') {
+        console.log('[Manager] Instância já conectada.');
+        await supabase
+          .from('whatsapp_instances')
+          .upsert({ user_id: userId, instance_name: instanceName, status: 'connected' }, { onConflict: 'user_id' });
+        
+        return res.json({ instanceName, state: 'open' });
+    }
+
+    // 3. ESTRATÉGIA DELETE -> CREATE
+    // Se não estiver conectado, deletamos a instância antiga para limpar qualquer estado travado.
+    // Isso garante que a criação subsequente gere um QR Code novo.
+    console.log(`[Manager] Resetando instância ${instanceName} para gerar novo QR...`);
+    
+    // Tenta deletar (ignora erro 404 se não existir)
+    await fetch(`${EVO_URL}/instance/delete/${instanceName}`, {
+        method: 'DELETE',
         headers: { 'apikey': EVO_GLOBAL_KEY }
     });
-    const connectData = await safeJson(connectRes);
 
-    // 4. Salva no DB (Tenta, mas não crasha se falhar)
-    const { error: dbError } = await supabase
+    // Aguarda um breve momento para garantir que a Evolution processou o delete
+    await new Promise(r => setTimeout(r, 1000));
+
+    // 4. Cria nova instância solicitando QR Code
+    const webhookUrl = `${APP_BASE_URL}/api/webhooks/whatsapp`;
+    
+    const createRes = await fetch(`${EVO_URL}/instance/create`, {
+        method: 'POST',
+        headers: { 
+            'apikey': EVO_GLOBAL_KEY, 
+            'Content-Type': 'application/json' 
+        },
+        body: JSON.stringify({
+            instanceName: instanceName,
+            token: userId, // Token de segurança da instância
+            qrcode: true,  // Força retorno do QR Code na resposta
+            webhook: webhookUrl,
+            webhook_by_events: true,
+            events: ["MESSAGES_UPSERT", "CONNECTION_UPDATE"]
+        })
+    });
+    
+    const createData = await safeJson(createRes);
+    
+    // Tenta extrair o QR code de diferentes formatos possíveis da resposta da Evolution
+    let base64 = createData.base64 || createData.qrcode?.base64 || createData.qrcode;
+
+    // Fallback: Se criou com sucesso mas não veio QR, tenta endpoint explícito de connect
+    if (!base64 && createData.instance?.state !== 'open') {
+         console.log('[Manager] QR Code não veio na criação. Tentando /connect...');
+         const connectRes = await fetch(`${EVO_URL}/instance/connect/${instanceName}`, {
+            headers: { 'apikey': EVO_GLOBAL_KEY }
+        });
+        const connectData = await safeJson(connectRes);
+        base64 = connectData.base64 || connectData.qrcode?.base64;
+    }
+
+    // Atualiza status no banco
+    const statusDb = base64 ? 'qrcode' : 'disconnected';
+    await supabase
         .from('whatsapp_instances')
         .upsert({ 
             user_id: userId, 
-            instance_name: instanceName,
-            status: connectData?.instance?.state === 'open' ? 'connected' : 'qrcode'
+            instance_name: instanceName, 
+            status: statusDb
         }, { onConflict: 'user_id' });
 
-    if (dbError) {
-        console.error("Erro CRÍTICO no DB (Tabela whatsapp_instances existe?):", dbError.message);
-    }
+    console.log(`[Manager] Retornando para front. QR Code gerado? ${!!base64}`);
 
     res.json({
         instanceName,
-        // Tenta pegar o QR code de todos os lugares possíveis
-        base64: connectData.base64 || connectData.qrcode?.base64 || createData.base64 || createData.qrcode?.base64, 
-        state: connectData?.instance?.state || createData?.instance?.state || 'connecting'
+        base64: base64, 
+        state: createData?.instance?.state || 'connecting'
     });
 
   } catch (error) {
-    console.error('Erro Init WhatsApp:', error);
-    res.status(500).json({ error: error.message || 'Erro interno no servidor' });
+    console.error('[Manager] Erro Crítico:', error);
+    res.status(500).json({ error: error.message || 'Erro interno no servidor Evolution' });
   }
 });
 
 // ... (Resto das rotas mantidas iguais) ...
+
 app.post('/api/whatsapp/status', async (req, res) => {
     const { instanceName } = req.body;
     try {
@@ -146,7 +172,7 @@ app.post('/api/webhooks/whatsapp', async (req, res) => {
     res.status(200).send('OK');
     try {
         const body = req.body;
-        // ... (Mesma lógica de webhook anterior)
+        // console.log('Webhook received:', body.event);
         if (body.event === 'CONNECTION_UPDATE') {
              await supabase.from('whatsapp_instances').update({ status: body.data.state === 'open' ? 'connected' : 'disconnected' }).eq('instance_name', body.instance);
         }

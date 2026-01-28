@@ -64,23 +64,20 @@ const Integration: React.FC = () => {
 
               if (!isMounted) return;
 
-              // Ignora erro 404 (tabela não existe) silenciosamente na UI
               if (error) {
-                 // Apenas logamos em dev, mas não quebramos a UI
-                 if (error.code !== '42P01') { // 42P01 é undefined_table no Postgres, mas via REST pode ser 404
-                    console.warn("Supabase Warning:", error.message);
-                 }
+                 if (error.code !== '42P01') console.warn("Supabase Warning:", error.message);
                  return; 
               }
 
               if (data) {
-                  // Se encontrou dados no banco, checa se está online na API
                   try {
+                      // Se salvou como conectado, verifica se ainda está
                       const status = await checkStatus(data.instance_name);
                       if (status.status === 'CONNECTED') {
                           setWhatsappConfig({ instanceName: data.instance_name, isConnected: true, apiKey: '', baseUrl: '' });
                           setWppStatus('CONNECTED');
                       } else {
+                          // Se não estiver conectado na API mas estiver no banco, marca como desconectado
                           setWhatsappConfig({ instanceName: data.instance_name, isConnected: false, apiKey: '', baseUrl: '' });
                           setWppStatus('DISCONNECTED');
                       }
@@ -101,8 +98,10 @@ const Integration: React.FC = () => {
     if (!user) return;
     setWppStatus('CONNECTING');
     setWppError('');
-    setWppQr(null);
+    setWppQr(null); // Limpa QR anterior para não mostrar imagem velha
+    
     try {
+        // Inicia processo de criação (o backend agora deleta instância antiga antes)
         const result = await initInstance(user.id, user.clinic);
         
         if (result.state === 'open') {
@@ -113,12 +112,13 @@ const Integration: React.FC = () => {
             setWppQr(result.base64);
             startStatusPolling(result.instanceName);
         } else if (result.state === 'connecting') {
-             // Caso não venha QR Code mas esteja conectando (ex: refresh), aguarda
+             // Evolution está tentando conectar. Pode ter um QR code pendente ou já estar indo.
              setWppStatus('CONNECTING');
+             // Iniciamos o polling para ver se vira connected ou se precisamos tentar de novo
              startStatusPolling(result.instanceName);
         } else {
             setWppStatus('DISCONNECTED');
-            setWppError("Não foi possível obter o QR Code. Tente novamente.");
+            setWppError("Não foi possível gerar o QR Code. A instância pode estar em processo de atualização. Tente novamente em 10 segundos.");
         }
     } catch (err: any) {
         setWppStatus('DISCONNECTED');
@@ -139,7 +139,7 @@ const Integration: React.FC = () => {
            } catch(e) { console.error(e); }
       }, 3000);
       
-      // Para de checar após 2 minutos
+      // Para de checar após 2 minutos (timeout do QR code)
       setTimeout(() => clearInterval(interval), 120000);
   }
 
@@ -152,7 +152,7 @@ const Integration: React.FC = () => {
       }
   };
   
-  // Helper para formatar o QR Code
+  // Garante que o base64 tenha o prefixo correto para a tag <img>
   const getQrCodeSrc = (base64: string) => {
     if (!base64) return '';
     if (base64.startsWith('data:image')) return base64;
@@ -318,7 +318,8 @@ const Integration: React.FC = () => {
                    {wppStatus === 'CONNECTING' && (
                        <div className="flex flex-col items-center py-4 text-slate-400 animate-in fade-in">
                            <Loader2 size={24} className="animate-spin mb-2 text-navy" />
-                           <p className="text-[10px] font-bold uppercase">Conectando...</p>
+                           <p className="text-[10px] font-bold uppercase">Conectando ao WhatsApp...</p>
+                           <p className="text-[9px] text-slate-300 text-center px-4">Isso pode levar alguns segundos se estivermos reiniciando a instância.</p>
                        </div>
                    )}
 
