@@ -5,212 +5,268 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
 import { createClient } from '@supabase/supabase-js';
+import makeWASocket, { useMultiFileAuthState, DisconnectReason, delay } from '@whiskeysockets/baileys';
+import pino from 'pino';
+import QRCode from 'qrcode';
+import fs from 'fs';
 
-// Carrega variáveis de ambiente locais (se houver arquivo .env)
+// Carrega variáveis de ambiente
 dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-// --- CONFIGURAÇÕES GLOBAIS ---
-const APP_BASE_URL = 'https://copilot-v1.onrender.com'; 
-const EVO_URL = 'https://task-dev-01-evolution-api.8ypyjm.easypanel.host';
-const EVO_GLOBAL_KEY = '429683C4C977415CAAFCCE10F7D57E11';
-const GOOGLE_ADS_DEV_TOKEN = 'F_eYB5lJNEavmardpRzBtw';
-
-// --- SUPABASE ADMIN ---
+// --- SUPABASE SETUP ---
 const SUPABASE_URL = process.env.VITE_SUPABASE_URL || 'https://rxvvtdqxinttuoamtapa.supabase.co';
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.VITE_SUPABASE_ANON_KEY || 'sb_publishable_cZXM43qOuiYp_JOR2D0Y7w_ofs7o-Gi';
-
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
+
+const GOOGLE_ADS_DEV_TOKEN = process.env.VITE_GOOGLE_ADS_DEV_TOKEN || 'F_eYB5lJNEavmardpRzBtw';
 
 app.use(cors());
 app.use(express.json({ limit: '50mb' })); 
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
-// Helper para tratar respostas JSON com segurança e LOGAR erros
-const safeJson = async (response, context = '') => {
-  try { 
-      const text = await response.text();
-      // console.log(`[Evo Response - ${context}]`, text.substring(0, 200)); 
-      return text ? JSON.parse(text) : {}; 
-  } catch (e) { 
-      console.warn(`Falha JSON [${context}]:`, e.message);
-      return {}; 
-  }
+// ==============================================================================
+// 1. GERENCIADOR DE SESSÕES BAILEYS (Nativo)
+// ==============================================================================
+
+const sessions = new Map();
+
+const getSessionPath = (userId) => {
+    return path.join(__dirname, 'auth_info_baileys', `session_${userId}`);
 };
 
-// ==============================================================================
-// 1. ROTAS DE GERENCIAMENTO WHATSAPP (EVOLUTION API)
-// ==============================================================================
+// Helper para extrair texto da mensagem
+const getMessageContent = (msg) => {
+    if (!msg.message) return '';
+    return msg.message.conversation || 
+           msg.message.extendedTextMessage?.text || 
+           msg.message.imageMessage?.caption || 
+           '';
+};
 
-app.post('/api/whatsapp/init', async (req, res) => {
-  const { userId } = req.body;
-  
-  if (!userId) return res.status(400).json({ error: 'User ID required' });
+// Função principal que inicia o socket do WhatsApp
+const startWhatsAppSession = async (userId) => {
+    const sessionPath = getSessionPath(userId);
+    
+    if (!fs.existsSync(sessionPath)) {
+        fs.mkdirSync(sessionPath, { recursive: true });
+    }
 
-  // Nome da instância limpo (Evolution não gosta de caracteres especiais)
-  const instanceName = `user_${userId.replace(/[^a-zA-Z0-9]/g, '')}`;
-  console.log(`[Manager] >>> INICIANDO PROCESSO PARA: ${instanceName}`);
+    const { state, saveCreds } = await useMultiFileAuthState(sessionPath);
+    
+    const sock = makeWASocket.default({
+        auth: state,
+        printQRInTerminal: true,
+        logger: pino({ level: 'silent' }),
+        browser: ["Copilot AI", "Chrome", "1.0.0"],
+        connectTimeoutMs: 60000,
+        defaultQueryTimeoutMs: 60000,
+        keepAliveIntervalMs: 10000,
+        emitOwnEvents: true,
+        retryRequestDelayMs: 250
+    });
 
-  const headers = { 
-    'apikey': EVO_GLOBAL_KEY, 
-    'Content-Type': 'application/json' 
-  };
+    sessions.set(userId, { 
+        sock, 
+        qrCode: null, 
+        status: 'connecting', 
+        reconnectAttempts: 0 
+    });
 
-  try {
-    // 1. CHECAGEM DE ESTADO
-    // Se já estiver conectado, não fazemos nada destrutivo.
-    try {
-        const checkRes = await fetch(`${EVO_URL}/instance/connectionState/${instanceName}`, { headers });
-        if (checkRes.ok) {
-            const checkData = await safeJson(checkRes, 'CheckStatus');
-            if (checkData?.instance?.state === 'open') {
-                console.log('[Manager] Instância JÁ CONECTADA. Retornando sucesso.');
-                await supabase
-                  .from('whatsapp_instances')
-                  .upsert({ user_id: userId, instance_name: instanceName, status: 'connected' }, { onConflict: 'user_id' });
-                return res.json({ instanceName, state: 'open' });
+    sock.ev.on('creds.update', saveCreds);
+
+    // --- LISTENER DE MENSAGENS (SALVA NO BANCO) ---
+    sock.ev.on('messages.upsert', async ({ messages, type }) => {
+        if (type === 'notify' || type === 'append') {
+            for (const msg of messages) {
+                try {
+                    if (!msg.key.remoteJid || msg.key.remoteJid === 'status@broadcast') continue;
+
+                    const isFromMe = msg.key.fromMe;
+                    const phone = msg.key.remoteJid.replace('@s.whatsapp.net', '');
+                    const textBody = getMessageContent(msg);
+                    
+                    if (!textBody) continue; // Ignora mensagens vazias ou tipos complexos não tratados ainda
+
+                    // 1. Busca ou Cria o Lead
+                    let leadId = null;
+                    const { data: existingLead } = await supabase
+                        .from('leads')
+                        .select('id')
+                        .eq('user_id', userId)
+                        .eq('phone', phone)
+                        .maybeSingle();
+
+                    if (existingLead) {
+                        leadId = existingLead.id;
+                        // Atualiza ultima mensagem do lead
+                        await supabase.from('leads').update({
+                            last_message: textBody,
+                            status: isFromMe ? undefined : 'Conversa' // Se cliente mandou, muda status
+                        }).eq('id', leadId);
+                    } else {
+                        // Novo Lead (apenas se for mensagem recebida, opcional)
+                        if (!isFromMe) {
+                            const { data: newLead } = await supabase.from('leads').insert({
+                                user_id: userId,
+                                name: msg.pushName || phone, // Tenta pegar nome do Whats ou usa fone
+                                phone: phone,
+                                status: 'Novo',
+                                temperature: 'Cold',
+                                last_message: textBody,
+                                source: 'WhatsApp'
+                            }).select().single();
+                            leadId = newLead?.id;
+                        }
+                    }
+
+                    // 2. Salva a Mensagem
+                    await supabase.from('whatsapp_messages').insert({
+                        user_id: userId,
+                        lead_id: leadId,
+                        contact_phone: phone,
+                        sender: isFromMe ? 'me' : 'contact',
+                        type: 'text',
+                        body: textBody,
+                        wa_message_id: msg.key.id,
+                        status: 'delivered'
+                    });
+
+                    console.log(`[WPP ${userId}] Msg salva: ${isFromMe ? 'Eu' : 'Cliente'} -> ${phone}`);
+
+                } catch (err) {
+                    console.error('Erro ao processar mensagem:', err);
+                }
             }
         }
-    } catch (e) { console.log('[Manager] Instância provavelmente offline ou inexistente.'); }
+    });
 
-    // 2. CICLO DE LIMPEZA (Logout -> Delete)
-    // Se o usuário pediu para iniciar, ele quer o QR Code. Vamos limpar o que existe.
-    console.log('[Manager] Limpando ambiente...');
-    
-    // Logout (previne sockets presos)
-    await fetch(`${EVO_URL}/instance/logout/${instanceName}`, { method: 'DELETE', headers }).catch(() => {});
-    
-    // Delete (remove do banco da Evolution)
-    const deleteRes = await fetch(`${EVO_URL}/instance/delete/${instanceName}`, { method: 'DELETE', headers });
-    
-    if (deleteRes.ok) {
-        console.log('[Manager] Instância deletada com sucesso. Aguardando limpeza...');
-        // DELAY CRÍTICO: O EasyPanel/Docker precisa de tempo para liberar o arquivo de sessão
-        await new Promise(r => setTimeout(r, 3000));
-    } else {
-        console.log('[Manager] Instância não existia ou erro ao deletar. Prosseguindo.');
-    }
+    sock.ev.on('connection.update', async (update) => {
+        const { connection, lastDisconnect, qr } = update;
+        const session = sessions.get(userId);
 
-    // 3. CRIAÇÃO DA INSTÂNCIA
-    console.log('[Manager] Criando nova instância...');
-    const webhookUrl = `${APP_BASE_URL}/api/webhooks/whatsapp`;
-    
-    const createRes = await fetch(`${EVO_URL}/instance/create`, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify({
-            instanceName: instanceName,
-            token: userId,
-            qrcode: true, 
-            webhook: webhookUrl,
-            webhook_by_events: true,
-            events: ["MESSAGES_UPSERT", "CONNECTION_UPDATE"],
-            integration: "WHATSAPP-BAILEYS", // Engine V2 Padrão
-            reject_call: false,
-            msg_call: ""
-        })
+        if (qr) {
+            console.log(`[WPP ${userId}] QR Code gerado!`);
+            try {
+                const qrBase64 = await QRCode.toDataURL(qr);
+                if (session) {
+                    session.qrCode = qrBase64;
+                    session.status = 'qrcode';
+                }
+                await supabase.from('whatsapp_instances')
+                    .upsert({ user_id: userId, instance_name: `native_${userId}`, status: 'qrcode' }, { onConflict: 'user_id' });
+            } catch (err) {}
+        }
+
+        if (connection === 'open') {
+            console.log(`[WPP ${userId}] CONEXÃO ESTABELECIDA!`);
+            if (session) {
+                session.status = 'connected';
+                session.qrCode = null;
+                session.reconnectAttempts = 0;
+            }
+            await supabase.from('whatsapp_instances')
+                .upsert({ user_id: userId, instance_name: `native_${userId}`, status: 'connected' }, { onConflict: 'user_id' });
+        }
+
+        if (connection === 'close') {
+            const shouldReconnect = (lastDisconnect?.error)?.output?.statusCode !== DisconnectReason.loggedOut;
+            console.log(`[WPP ${userId}] Conexão fechada. Reconectar? ${shouldReconnect}`);
+            
+            if (shouldReconnect) {
+                if (session) session.status = 'reconnecting';
+                await delay(2000); 
+                startWhatsAppSession(userId);
+            } else {
+                console.log(`[WPP ${userId}] Desconectado.`);
+                if (session) session.status = 'disconnected';
+                sessions.delete(userId);
+                try { fs.rmSync(sessionPath, { recursive: true, force: true }); } catch(e) {}
+                
+                await supabase.from('whatsapp_instances')
+                    .upsert({ user_id: userId, instance_name: `native_${userId}`, status: 'disconnected' }, { onConflict: 'user_id' });
+            }
+        }
     });
     
-    const createData = await safeJson(createRes, 'Create');
-    
-    // Se der erro 403/409, significa que ela ainda existe. Vamos tentar conectar nela mesmo assim.
-    if (!createRes.ok && (createRes.status === 403 || createRes.status === 409)) {
-        console.warn('[Manager] Instância já existia (Delete falhou ou foi lento). Tentando conexão direta...');
-    } else if (!createRes.ok) {
-        // Erro real
-        throw new Error(createData.error || createData.message || 'Falha ao criar instância na Evolution');
+    return sock;
+};
+
+// ... (Resto das rotas mantidas: /init, /status, /send, /logout, etc) ...
+
+app.post('/api/whatsapp/init', async (req, res) => {
+    const { userId } = req.body;
+    if (!userId) return res.status(400).json({ error: 'User ID required' });
+
+    const existingSession = sessions.get(userId);
+    if (existingSession && existingSession.status === 'connected') {
+        return res.json({ state: 'open', instanceName: `native_${userId}` });
+    }
+    if (existingSession && (existingSession.status === 'connecting' || existingSession.status === 'qrcode')) {
+         return res.json({ state: 'connecting', base64: existingSession.qrCode, instanceName: `native_${userId}` });
     }
 
-    // 4. BUSCA DO QR CODE (CONNECT)
-    // Na v2, o create as vezes não retorna o base64 se o socket demorar.
-    // Chamamos o connect explicitamente.
-    console.log('[Manager] Solicitando QR Code via /connect...');
-    await new Promise(r => setTimeout(r, 1000)); // Espera a instância "subir"
-
-    // IMPORTANTE: Na v2, connect é geralmente GET para recuperar o QR
-    const connectRes = await fetch(`${EVO_URL}/instance/connect/${instanceName}`, { 
-        method: 'GET', 
-        headers 
-    });
-    
-    const connectData = await safeJson(connectRes, 'Connect');
-    
-    // Normalização: O base64 pode vir em lugares diferentes dependendo da versão exata
-    const base64 = connectData.base64 || connectData.qrcode?.base64 || connectData.qrcode || createData.base64 || createData.qrcode?.base64;
-
-    if (base64) {
-        console.log('[Manager] QR Code obtido com sucesso!');
-        
-        await supabase
-            .from('whatsapp_instances')
-            .upsert({ user_id: userId, instance_name: instanceName, status: 'qrcode' }, { onConflict: 'user_id' });
-
-        return res.json({
-            instanceName,
-            base64: base64,
-            state: 'connecting'
+    try {
+        await startWhatsAppSession(userId);
+        await delay(1500);
+        const newSession = sessions.get(userId);
+        res.json({
+            state: newSession?.status === 'connected' ? 'open' : 'connecting',
+            base64: newSession?.qrCode,
+            instanceName: `native_${userId}`
         });
-    } 
-    
-    console.error('[Manager] Falha ao obter QR Code.', connectData);
-    // Retornamos 200 com erro lógico para o frontend tratar sem crashar
-    return res.json({ 
-        error: true, 
-        message: 'A instância foi criada, mas o QR Code demorou para ser gerado. Tente clicar novamente em "Gerar QR Code".' 
-    });
-
-  } catch (error) {
-    console.error('[Manager] Erro Crítico:', error);
-    res.status(500).json({ error: error.message || 'Erro interno no servidor' });
-  }
+    } catch (e) {
+        res.status(500).json({ error: 'Falha ao iniciar driver do WhatsApp' });
+    }
 });
 
-// ... (Resto das rotas inalteradas) ...
-
 app.post('/api/whatsapp/status', async (req, res) => {
-    const { instanceName } = req.body;
-    try {
-        const response = await fetch(`${EVO_URL}/instance/connectionState/${instanceName}`, { headers: { 'apikey': EVO_GLOBAL_KEY } });
-        const data = await safeJson(response);
-        res.json(data);
-    } catch (e) { res.status(500).json({ error: 'Erro ao checar status' }); }
+    const { instanceName } = req.body; 
+    const userId = instanceName ? instanceName.replace('native_', '') : null;
+    if (!userId) return res.status(400).json({ error: 'Invalid instance name' });
+    const session = sessions.get(userId);
+    if (!session) return res.json({ instance: { state: 'disconnected' } });
+    res.json({
+        instance: { state: session.status === 'connected' ? 'open' : 'connecting' },
+        base64: session.qrCode
+    });
 });
 
 app.post('/api/whatsapp/send', async (req, res) => {
     const { instanceName, number, text } = req.body;
+    const userId = instanceName.replace('native_', '');
+    const session = sessions.get(userId);
+    if (!session || session.status !== 'connected') return res.status(400).json({ error: 'WhatsApp desconectado' });
     try {
-        const response = await fetch(`${EVO_URL}/message/sendText/${instanceName}`, {
-            method: 'POST',
-            headers: { 'apikey': EVO_GLOBAL_KEY, 'Content-Type': 'application/json' },
-            body: JSON.stringify({ number, options: { delay: 1200 }, textMessage: { text } })
-        });
-        const data = await safeJson(response);
-        res.json(data);
-    } catch (e) { res.status(500).json({ error: 'Erro ao enviar' }); }
+        const jid = number + '@s.whatsapp.net';
+        await session.sock.sendMessage(jid, { text: text });
+        // O listener 'upsert' vai capturar essa msg enviada e salvar no banco automaticamente
+        res.json({ status: 'sent' });
+    } catch (e) {
+        res.status(500).json({ error: 'Falha no envio' });
+    }
 });
 
-app.post('/api/webhooks/whatsapp', async (req, res) => {
-    res.status(200).send('OK');
-    try {
-        const body = req.body;
-        // Atualiza status no banco quando a Evolution notificar
-        if (body.event === 'CONNECTION_UPDATE') {
-             const state = body.data?.state || body.data?.status;
-             const newStatus = state === 'open' ? 'connected' : 'disconnected';
-             await supabase.from('whatsapp_instances').update({ status: newStatus }).eq('instance_name', body.instance);
-        }
-    } catch (e) { console.error('[Webhook Error]', e); }
+app.post('/api/whatsapp/logout', async (req, res) => {
+    const { userId } = req.body;
+    const session = sessions.get(userId);
+    if (session) {
+        try { await session.sock.logout(); } catch (e) {}
+        sessions.delete(userId);
+        const sessionPath = getSessionPath(userId);
+        try { fs.rmSync(sessionPath, { recursive: true, force: true }); } catch (e) {}
+    }
+    await supabase.from('whatsapp_instances').delete().eq('user_id', userId);
+    res.json({ success: true });
 });
 
 app.post('/api/google-ads', async (req, res) => {
     try {
-        const { action, access_token, customer_id, date_range } = req.body;
+        const { action, access_token, customer_id } = req.body;
         const developer_token = GOOGLE_ADS_DEV_TOKEN;
-        if (!access_token) return res.status(400).json({ error: 'Missing access_token' });
-
         const API_VERSION = 'v16';
         const BASE_URL = `https://googleads.googleapis.com/${API_VERSION}`;
         const headers = { 'Authorization': `Bearer ${access_token}`, 'developer-token': developer_token, 'Content-Type': 'application/json' };
@@ -232,11 +288,15 @@ app.post('/api/google-ads', async (req, res) => {
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-app.get('/api/health', (req, res) => res.json({ status: 'online' }));
+const safeJson = async (response) => {
+    try { return await response.json(); } catch { return {}; }
+};
+
+app.get('/api/health', (req, res) => res.json({ status: 'online', mode: 'native_baileys' }));
 app.use(express.static(path.join(__dirname, 'dist')));
 app.get('*', (req, res) => res.sendFile(path.join(__dirname, 'dist', 'index.html')));
 
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
-  console.log(`Config: ${APP_BASE_URL} | WhatsApp: ${EVO_URL}`);
+  console.log(`WhatsApp Engine: Native Baileys`);
 });

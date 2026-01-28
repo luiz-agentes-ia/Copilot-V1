@@ -1,18 +1,14 @@
 
 import React, { useState, useEffect } from 'react';
 import { 
-  CheckCircle2, Calendar, Zap, Loader2, LogOut, Copy, Terminal,
-  AlertOctagon, ExternalLink, FileSpreadsheet, Activity, AlertCircle,
-  Search, ArrowRight, DownloadCloud, Table, FileDown, ArrowLeft,
-  LayoutList, Files, Settings, MessageCircle, Smartphone, Upload,
-  RefreshCw, Plus
+  CheckCircle2, Calendar, Loader2, LogOut, MessageCircle, Smartphone, 
+  FileSpreadsheet, Activity, AlertCircle, Upload
 } from 'lucide-react';
 import { useApp } from '../App';
-import { signInWithGoogleAds, getAccessibleCustomers } from '../services/googleAdsService';
+import { signInWithGoogleAds } from '../services/googleAdsService';
 import { signInWithGoogleCalendar } from '../services/googleCalendarService';
 import { signInWithGoogleSheets, listSpreadsheets, getSpreadsheetDetails, getSheetData } from '../services/googleSheetsService';
-import { initInstance, checkStatus } from '../services/whatsappService';
-import { GoogleAdAccount, WhatsappConfig } from '../types';
+import { initInstance, checkStatus, logoutInstance } from '../services/whatsappService';
 import { supabase } from '../lib/supabase';
 
 // Ícone do Google
@@ -48,51 +44,13 @@ const Integration: React.FC = () => {
   const [importStatus, setImportStatus] = useState<string>('');
   const [importLoading, setImportLoading] = useState(false);
 
-  // --- WHATSAPP LOGIC ---
+  // Sincroniza estado local com Global/Persistido
   useEffect(() => {
-      let isMounted = true;
-      const loadSavedInstance = async () => {
-          if (!user) return;
-          
-          try {
-              // Verifica se a tabela existe de forma segura
-              const { data, error } = await supabase
-                .from('whatsapp_instances')
-                .select('*')
-                .eq('user_id', user.id)
-                .maybeSingle();
-
-              if (!isMounted) return;
-
-              if (error) {
-                 if (error.code !== '42P01') console.warn("Supabase Warning:", error.message);
-                 return; 
-              }
-
-              if (data) {
-                  try {
-                      // Se salvou como conectado, verifica se ainda está
-                      const status = await checkStatus(data.instance_name);
-                      if (status.status === 'CONNECTED') {
-                          setWhatsappConfig({ instanceName: data.instance_name, isConnected: true, apiKey: '', baseUrl: '' });
-                          setWppStatus('CONNECTED');
-                      } else {
-                          // Se não estiver conectado na API mas estiver no banco, marca como desconectado
-                          setWhatsappConfig({ instanceName: data.instance_name, isConnected: false, apiKey: '', baseUrl: '' });
-                          setWppStatus('DISCONNECTED');
-                      }
-                  } catch (apiError) {
-                      console.warn("API Check failed, keeping local state.");
-                  }
-              }
-          } catch (e) { 
-             console.error("Critical WPP Load Error:", e);
-          }
-      };
-      
-      loadSavedInstance();
-      return () => { isMounted = false; };
-  }, [user]);
+     if (whatsappConfig?.isConnected) {
+         setWppStatus('CONNECTED');
+         setWppQr(null);
+     }
+  }, [whatsappConfig]);
 
   const handleWppConnect = async () => {
     if (!user) return;
@@ -101,32 +59,21 @@ const Integration: React.FC = () => {
     setWppQr(null); 
     
     try {
+        // Backend nativo retorna { state, base64, instanceName }
         const result = await initInstance(user.id, user.clinic);
         
-        // Verifica se a API retornou erro lógico (ex: timeout de QR code)
-        if (result.error) {
-            setWppStatus('DISCONNECTED');
-            setWppError(result.message);
-            return;
-        }
-
         if (result.state === 'open') {
             setWppStatus('CONNECTED');
             setWhatsappConfig({ instanceName: result.instanceName, isConnected: true, apiKey: '', baseUrl: '' });
-        } else if (result.base64) {
-            setWppStatus('QRCODE');
-            setWppQr(result.base64);
-            startStatusPolling(result.instanceName);
-        } else if (result.state === 'connecting') {
-             setWppStatus('CONNECTING');
-             startStatusPolling(result.instanceName);
         } else {
-            setWppStatus('DISCONNECTED');
-            setWppError("Instabilidade na Evolution API. Tente novamente em 1 minuto.");
+            // Se veio base64, mostramos. Se não, começamos polling para esperar o backend gerar.
+            if (result.base64) setWppQr(result.base64);
+            setWppStatus(result.base64 ? 'QRCODE' : 'CONNECTING');
+            startStatusPolling(result.instanceName);
         }
     } catch (err: any) {
         setWppStatus('DISCONNECTED');
-        setWppError(err.message || "Erro de conexão com servidor.");
+        setWppError(err.message || "Erro ao iniciar serviço WhatsApp.");
     }
   };
 
@@ -134,6 +81,13 @@ const Integration: React.FC = () => {
       const interval = setInterval(async () => {
            try {
                const check = await checkStatus(instanceName);
+               
+               // Backend atualizou o QR Code?
+               if (check.base64 && check.state !== 'open') {
+                   setWppQr(check.base64);
+                   setWppStatus('QRCODE');
+               }
+
                if (check.status === 'CONNECTED') {
                    clearInterval(interval);
                    setWppStatus('CONNECTED');
@@ -141,28 +95,19 @@ const Integration: React.FC = () => {
                    setWhatsappConfig({ instanceName: instanceName, isConnected: true, apiKey: '', baseUrl: '' });
                }
            } catch(e) { console.error(e); }
-      }, 3000);
+      }, 2000); // Check a cada 2s
       
-      // Para de checar após 2 minutos (timeout do QR code)
-      setTimeout(() => clearInterval(interval), 120000);
+      // Para polling após 2 minutos para evitar consumo excessivo
+      setTimeout(() => clearInterval(interval), 120000); 
   }
 
   const handleWppDisconnect = async () => {
+      if (user) await logoutInstance(user.id);
       setWhatsappConfig(null);
       setWppStatus('IDLE');
       setWppQr(null);
-      if (user) {
-          try { await supabase.from('whatsapp_instances').delete().eq('user_id', user.id); } catch (e) {}
-      }
   };
   
-  // Garante que o base64 tenha o prefixo correto para a tag <img>
-  const getQrCodeSrc = (base64: string) => {
-    if (!base64) return '';
-    if (base64.startsWith('data:image')) return base64;
-    return `data:image/png;base64,${base64}`;
-  };
-
   // --- SHEETS LOGIC ---
   useEffect(() => {
     if (googleSheetsToken) {
@@ -205,19 +150,16 @@ const Integration: React.FC = () => {
           if (rows.length < 2) throw new Error("Planilha vazia ou sem cabeçalho.");
           
           const header = rows[0].map((c: string) => c.toLowerCase());
-          
-          // Heurística simples para encontrar colunas
           let nameIdx = header.findIndex((h:string) => h.includes('nome') || h.includes('name') || h.includes('cliente'));
-          let phoneIdx = header.findIndex((h:string) => h.includes('tel') || h.includes('cel') || h.includes('phone') || h.includes('whatsapp') || h.includes('contato'));
+          let phoneIdx = header.findIndex((h:string) => h.includes('tel') || h.includes('cel') || h.includes('phone') || h.includes('whatsapp'));
           
-          if (nameIdx === -1) nameIdx = 0; // Fallback coluna A
-          if (phoneIdx === -1) phoneIdx = 1; // Fallback coluna B
+          if (nameIdx === -1) nameIdx = 0; 
+          if (phoneIdx === -1) phoneIdx = 1;
 
           let count = 0;
           for (let i = 1; i < rows.length; i++) {
               const row = rows[i];
               if (!row[nameIdx]) continue;
-              
               await addLead({
                   id: '',
                   name: row[nameIdx],
@@ -239,10 +181,7 @@ const Integration: React.FC = () => {
   };
 
   // --- GOOGLE AUTH HANDLERS ---
-  const handleGoogleLogin = async () => {
-    setLoading('google-ads');
-    try { await signInWithGoogleAds(); } catch (error: any) { alert("Erro: " + error.message); setLoading(null); }
-  };
+  const handleGoogleLogin = async () => { setLoading('google-ads'); try { await signInWithGoogleAds(); } catch (error: any) { alert("Erro: " + error.message); setLoading(null); } };
   const handleGoogleLogout = async () => { await supabase.auth.signOut(); localStorage.removeItem('google_ads_token'); setGoogleAdsToken(null); window.location.reload(); };
   
   const handleCalendarLogin = async () => { setLoading('calendar'); try { await signInWithGoogleCalendar(); } catch (e: any) { alert(e.message); setLoading(null); } };
@@ -298,13 +237,13 @@ const Integration: React.FC = () => {
               <div className="p-3 bg-slate-50 rounded-2xl group-hover:bg-navy group-hover:text-white transition-colors"><MessageCircle size={24} className="text-emerald-600"/></div>
               {whatsappConfig?.isConnected ? <span className="flex items-center gap-1 text-[9px] font-black text-emerald-600 bg-emerald-50 px-2 py-1 rounded-full uppercase border border-emerald-100"><CheckCircle2 size={10} /> Ativo</span> : <span className="text-[9px] font-black text-slate-300 bg-slate-50 px-2 py-1 rounded-full uppercase border border-slate-100">Inativo</span>}
             </div>
-            <h3 className="font-black text-navy text-sm uppercase tracking-widest">WhatsApp Business</h3>
-            <p className="text-[10px] text-slate-400 mt-1 mb-4 h-8">Conecte seu número para ativar a IA.</p>
+            <h3 className="font-black text-navy text-sm uppercase tracking-widest">WhatsApp Business (Nativo)</h3>
+            <p className="text-[10px] text-slate-400 mt-1 mb-4 h-8">Conexão direta e estável.</p>
             
             {whatsappConfig?.isConnected ? (
                <div className="mt-auto space-y-3">
                    <div className="p-3 bg-emerald-50 border border-emerald-100 rounded-xl">
-                      <p className="text-[10px] font-bold text-emerald-800 flex items-center gap-2"><Smartphone size={12}/> {whatsappConfig.instanceName}</p>
+                      <p className="text-[10px] font-bold text-emerald-800 flex items-center gap-2"><Smartphone size={12}/> Online</p>
                    </div>
                    <button onClick={handleWppDisconnect} className="w-full py-2 flex items-center justify-center gap-2 text-[10px] font-black uppercase text-rose-400 hover:text-rose-600 hover:bg-rose-50 rounded-xl transition-all"><LogOut size={12} /> Desconectar</button>
                </div>
@@ -322,15 +261,15 @@ const Integration: React.FC = () => {
                    {wppStatus === 'CONNECTING' && (
                        <div className="flex flex-col items-center py-4 text-slate-400 animate-in fade-in">
                            <Loader2 size={24} className="animate-spin mb-2 text-navy" />
-                           <p className="text-[10px] font-bold uppercase">Reiniciando Instância...</p>
-                           <p className="text-[9px] text-slate-300 text-center px-4">Estamos reconfigurando a conexão com a Evolution API. Aguarde...</p>
+                           <p className="text-[10px] font-bold uppercase">Iniciando Servidor...</p>
+                           <p className="text-[9px] text-slate-300 text-center px-4">Preparando conexão segura...</p>
                        </div>
                    )}
 
                    {wppStatus === 'QRCODE' && wppQr && (
                        <div className="text-center space-y-3 animate-in zoom-in">
                            <div className="bg-white p-2 rounded-xl border border-slate-200 inline-block shadow-sm">
-                               <img src={getQrCodeSrc(wppQr)} alt="QR Code" className="w-48 h-48 object-contain" />
+                               <img src={wppQr} alt="QR Code" className="w-48 h-48 object-contain" />
                            </div>
                            <p className="text-[10px] font-bold text-navy uppercase animate-pulse">Leia o QR Code no WhatsApp</p>
                            <button onClick={() => setWppStatus('IDLE')} className="text-[9px] underline text-slate-400 hover:text-rose-400">Cancelar</button>
@@ -340,6 +279,7 @@ const Integration: React.FC = () => {
             )}
         </div>
 
+        {/* ... (Outros cards mantidos) ... */}
         {/* GOOGLE CALENDAR CARD */}
         <div className={`bg-white p-6 rounded-3xl border shadow-sm flex flex-col group transition-all ${googleCalendarToken ? 'border-emerald-100 ring-1 ring-emerald-50' : 'border-slate-200 hover:border-navy'}`}>
             <div className="flex justify-between items-start mb-4">

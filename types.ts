@@ -45,6 +45,16 @@ export interface Lead {
   created_at?: string;
 }
 
+// --- TABELA: MENSAGENS WHATSAPP ---
+export interface ChatMessage {
+  id: string;
+  lead_id?: string;
+  sender: 'me' | 'contact';
+  body: string;
+  created_at: string;
+  status: 'sent' | 'delivered' | 'read';
+}
+
 // --- TABELA: TRANSACTIONS (Financeiro) ---
 export enum FinancialSubSection {
   OVERVIEW = 'overview',

@@ -12,6 +12,7 @@ import Profile from './components/Profile';
 import { AppSection, DateRange, ConsolidatedMetrics, FinancialEntry, Lead, Appointment, WhatsappConfig } from './types';
 import { Menu, X, Bot, Loader2, AlertCircle, ArrowRight, ShieldCheck } from 'lucide-react';
 import { supabase } from './lib/supabase';
+import { initInstance } from './services/whatsappService';
 
 interface User {
   id: string;
@@ -107,11 +108,8 @@ const App: React.FC = () => {
   const [googleAdsToken, setGoogleAdsToken] = useState<string | null>(localStorage.getItem('google_ads_token'));
   const [googleSheetsToken, setGoogleSheetsToken] = useState<string | null>(localStorage.getItem('google_sheets_token'));
   
-  // Load Whatsapp Config from LocalStorage
-  const [whatsappConfig, setWhatsappConfigState] = useState<WhatsappConfig | null>(() => {
-    const saved = localStorage.getItem('whatsapp_config');
-    return saved ? JSON.parse(saved) : null;
-  });
+  // Whatsapp Config State
+  const [whatsappConfig, setWhatsappConfigState] = useState<WhatsappConfig | null>(null);
 
   const setWhatsappConfig = (config: WhatsappConfig | null) => {
     setWhatsappConfigState(config);
@@ -214,6 +212,29 @@ const App: React.FC = () => {
     } catch (err) { console.error(err); }
   }, [user]);
 
+  // --- RESTAURA CONEXÃO WHATSAPP ---
+  const restoreWhatsappConnection = async (userId: string, clinic: string) => {
+      try {
+          const { data, error } = await supabase
+              .from('whatsapp_instances')
+              .select('*')
+              .eq('user_id', userId)
+              .maybeSingle();
+
+          if (data && data.status === 'connected') {
+              // Se o banco diz que está conectado, acordamos o backend
+              setWhatsappConfigState({ instanceName: data.instance_name, isConnected: true, apiKey: '', baseUrl: '' });
+              
+              // Chama o init em background para garantir que o socket está de pé
+              initInstance(userId, clinic).catch(console.error);
+          } else {
+              setWhatsappConfigState(null);
+          }
+      } catch (err) {
+          console.error("Erro ao restaurar WhatsApp:", err);
+      }
+  };
+
   // --- REALTIME SUBSCRIPTIONS ---
   useEffect(() => {
     if (!isAuthenticated || !user || !supabase) return;
@@ -226,6 +247,15 @@ const App: React.FC = () => {
       .on('postgres_changes', { event: '*', schema: 'public', table: 'transactions' }, () => fetchFinancials())
       .on('postgres_changes', { event: '*', schema: 'public', table: 'leads' }, () => fetchLeads())
       .on('postgres_changes', { event: '*', schema: 'public', table: 'appointments' }, () => fetchAppointments())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'whatsapp_instances', filter: `user_id=eq.${user.id}` }, (payload) => {
+          // Atualiza status do WhatsApp em tempo real se mudar no banco
+          const newData = payload.new as any;
+          if (newData && newData.status === 'connected') {
+              setWhatsappConfigState({ instanceName: newData.instance_name, isConnected: true, apiKey: '', baseUrl: '' });
+          } else if (newData && newData.status === 'disconnected') {
+              setWhatsappConfigState(null);
+          }
+      })
       .subscribe();
 
     return () => {
@@ -237,17 +267,17 @@ const App: React.FC = () => {
   useEffect(() => {
     if (!supabase) return;
     
-    const handleSession = (session: any) => {
+    const handleSession = async (session: any) => {
        setSession(session);
        setIsAuthenticated(!!session);
        
        if (session) {
-          fetchUserProfile(session.user.id);
-          const authIntent = localStorage.getItem('auth_intent');
+          await fetchUserProfile(session.user.id);
+          // Tenta restaurar a sessão do WhatsApp salva no banco
+          await restoreWhatsappConnection(session.user.id, 'Minha Clínica');
           
+          const authIntent = localStorage.getItem('auth_intent');
           if (session.provider_token) {
-             console.log("Token do provedor (Google) detectado com sucesso!");
-             
              if (authIntent === 'google_ads') {
                 setGoogleAdsToken(session.provider_token);
                 localStorage.setItem('google_ads_token', session.provider_token);
@@ -263,24 +293,20 @@ const App: React.FC = () => {
                 localStorage.setItem('google_sheets_token', session.provider_token);
                 localStorage.removeItem('auth_intent');
              }
-          } else if (authIntent) {
-              console.warn("Auth intent existe (" + authIntent + ") mas provider_token não veio na sessão.");
           }
        } else {
           setUser(null);
           setFinancialEntries([]);
           setLeads([]);
           setAppointments([]);
+          setWhatsappConfig(null);
        }
        setAuthLoading(false);
     };
 
-    // Verifica a sessão atual imediatamente
     supabase.auth.getSession().then(({ data: { session } }) => handleSession(session));
     
-    // Ouve mudanças
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
-        console.log("Auth event:", event);
         handleSession(session);
     });
     
@@ -329,7 +355,7 @@ const App: React.FC = () => {
     try {
         await supabase!.auth.signOut(); 
     } catch (e) {
-        console.warn("Erro ao desconectar do Supabase, forçando limpeza local", e);
+        console.warn("Erro ao desconectar do Supabase", e);
     } finally {
         localStorage.clear(); 
         setGoogleAdsToken(null);
@@ -341,7 +367,7 @@ const App: React.FC = () => {
     }
   };
 
-  // ... (Resto das funções de CRUD: addFinancialEntry, updateFinancialEntry, etc.) ...
+  // ... (Rest of CRUD functions are same)
   
   // Financeiro
   const addFinancialEntry = async (entry: FinancialEntry) => {
@@ -401,9 +427,9 @@ const App: React.FC = () => {
         last_message: lead.lastMessage, 
         potential_value: lead.potentialValue,
         source: lead.source,
-        email: lead.email,        // NEW
-        procedure: lead.procedure, // NEW
-        notes: lead.notes          // NEW
+        email: lead.email,
+        procedure: lead.procedure,
+        notes: lead.notes
     }]);
 
     if (error) setLeads(prev => prev.filter(l => l.id !== tempId));
@@ -419,9 +445,9 @@ const App: React.FC = () => {
         last_message: lead.lastMessage, 
         potential_value: lead.potentialValue,
         source: lead.source,
-        email: lead.email,         // NEW
-        procedure: lead.procedure, // NEW
-        notes: lead.notes          // NEW
+        email: lead.email,
+        procedure: lead.procedure,
+        notes: lead.notes
     }).eq('id', lead.id);
     
     if (error) fetchLeads();
@@ -463,7 +489,6 @@ const App: React.FC = () => {
     }
   };
 
-  // --- CONSOLIDATED METRICS LOGIC ---
   const consolidatedMetrics = useMemo((): ConsolidatedMetrics => {
     const filteredEntries = financialEntries.filter(e => e.date >= dateFilter.start && e.date <= dateFilter.end && e.status === 'efetuada');
     const filteredLeads = leads.filter(l => l.created_at && l.created_at.split('T')[0] >= dateFilter.start && l.created_at.split('T')[0] <= dateFilter.end);
@@ -529,13 +554,10 @@ const App: React.FC = () => {
     <AppContext.Provider value={{ 
       user, updateUser, isAuthenticated, login, signUp, logout, 
       integrations, 
-      
       googleCalendarToken, setGoogleCalendarToken,
       googleAdsToken, setGoogleAdsToken,
       googleSheetsToken, setGoogleSheetsToken,
-      
       whatsappConfig, setWhatsappConfig,
-
       toggleIntegration, 
       dateFilter, setDateFilter, metrics: consolidatedMetrics,
       financialEntries, addFinancialEntry, updateFinancialEntry, deleteFinancialEntry,
@@ -642,14 +664,6 @@ const AuthScreen = ({ onLogin, onSignUp }: { onLogin: any, onSignUp: any }) => {
               <ArrowRight size={14} />
             </button>
           </div>
-        </div>
-        <div className="space-y-4">
-            <div className="flex items-center justify-center gap-2 text-slate-400 opacity-50"><ShieldCheck size={14} /><span className="text-[10px] font-black uppercase tracking-widest">Criptografia de Ponta a Ponta</span></div>
-            <div className="flex justify-center items-center gap-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">
-                <a href="https://iatask.com.br/termo/" target="_blank" rel="noopener noreferrer" className="hover:text-navy transition-colors border-b border-transparent hover:border-navy">Termos de Serviço</a>
-                <span className="text-slate-300">•</span>
-                <a href="https://iatask.com.br/politica/" target="_blank" rel="noopener noreferrer" className="hover:text-navy transition-colors border-b border-transparent hover:border-navy">Política de Privacidade</a>
-            </div>
         </div>
       </div>
     </div>
