@@ -186,7 +186,7 @@ const Integration: React.FC = () => {
           setSpreadsheets(files);
           setImportStatus('');
       } catch (err) {
-          setImportStatus('Erro ao listar arquivos. Tente reconectar.');
+          setImportStatus('Erro: Tente reconectar a conta (Permissão Drive).');
           console.error(err);
       }
   };
@@ -442,9 +442,14 @@ const Integration: React.FC = () => {
             {googleSheetsToken ? (
                <div className="mt-auto space-y-3">
                   {!isImporting ? (
-                      <button onClick={startImportFlow} className="w-full py-3 bg-emerald-600 text-white rounded-xl font-black text-[10px] uppercase tracking-widest shadow-lg hover:bg-emerald-700 transition-all flex items-center justify-center gap-2">
-                          <DownloadCloud size={14} /> Importar Leads
-                      </button>
+                      <div className="space-y-2">
+                          <button onClick={startImportFlow} className="w-full py-3 bg-emerald-600 text-white rounded-xl font-black text-[10px] uppercase tracking-widest shadow-lg hover:bg-emerald-700 transition-all flex items-center justify-center gap-2">
+                              <DownloadCloud size={14} /> Importar Leads
+                          </button>
+                          <button onClick={downloadTemplate} className="w-full py-2 text-[9px] font-bold text-emerald-600 flex items-center justify-center gap-1 hover:bg-emerald-50 rounded-lg transition-colors border border-transparent hover:border-emerald-100">
+                              <FileDown size={12} /> Baixar Modelo CSV
+                          </button>
+                      </div>
                   ) : (
                       <div className="p-3 bg-emerald-50 rounded-xl border border-emerald-100 space-y-3 animate-in fade-in">
                           
@@ -462,15 +467,11 @@ const Integration: React.FC = () => {
                                    <div className="bg-slate-50 p-1 rounded border border-slate-100 text-slate-400">Status</div>
                                    <div className="bg-slate-50 p-1 rounded border border-slate-100 text-slate-400">Valor</div>
                               </div>
-                              <div className="flex justify-between items-center mt-3">
-                                <p className="text-[8px] text-rose-500 font-bold">* Colunas "Nome" e "Telefone" são obrigatórias.</p>
-                                <button onClick={downloadTemplate} className="text-[8px] font-bold text-emerald-600 flex items-center gap-1 hover:underline">
-                                    <FileDown size={10} /> Baixar Modelo CSV
-                                </button>
-                              </div>
                           </div>
 
-                          <p className="text-[10px] font-bold text-emerald-800">{importStatus || 'Selecione o arquivo:'}</p>
+                          <p className={`text-[10px] font-bold ${importStatus.includes('Erro') ? 'text-rose-600 bg-rose-50 p-2 rounded border border-rose-100' : 'text-emerald-800'}`}>
+                            {importStatus || 'Selecione o arquivo:'}
+                          </p>
                           
                           {/* 1. Seleção de Planilha */}
                           {spreadsheets.length > 0 && !selectedSpreadsheet && (
