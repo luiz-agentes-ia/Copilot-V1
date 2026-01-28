@@ -8,18 +8,30 @@ const API_BASE = '/api/whatsapp';
 
 // Helper para ler JSON de forma segura
 const safeFetch = async (url: string, options: any) => {
+    let response;
     try {
-        const response = await fetch(url, options);
-        const data = await response.json();
-        
-        if (!response.ok) {
-            throw new Error(data.error || `Erro ${response.status}`);
-        }
-        return data;
-    } catch (error: any) {
-        console.error("Fetch Error:", error);
-        throw error;
+        response = await fetch(url, options);
+    } catch (error) {
+        console.error("Network/Connection Error:", error);
+        throw new Error("Falha de conexão. Verifique se o servidor backend está online.");
     }
+
+    const text = await response.text();
+    let data;
+    
+    try {
+        // Evita erro "Unexpected end of JSON input" em respostas vazias
+        data = text ? JSON.parse(text) : {};
+    } catch (error) {
+        console.error(`Invalid JSON response from ${url}:`, text);
+        throw new Error(`Resposta inválida do servidor (Status ${response.status}). Tente novamente.`);
+    }
+
+    if (!response.ok) {
+        throw new Error(data.error || `Erro ${response.status}`);
+    }
+    
+    return data;
 };
 
 // 1. Iniciar conexão (backend inicia Baileys e retorna base64 se tiver)
@@ -49,6 +61,7 @@ export const checkStatus = async (instanceName: string) => {
             base64: data.base64 // Retorna QR se houver
         };
     } catch (error) {
+        // Retorna status de erro silencioso para polling não quebrar a UI inteira
         return { status: 'ERROR' };
     }
 };
